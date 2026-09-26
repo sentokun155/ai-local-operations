@@ -102,6 +102,32 @@ If current `C:\Dev\local-mcp` contains secrets/runtime state, exclude them durin
 - Duplicate / uncertain dispatch must not create a second Task under the same identity.
 - Candidate revisions are validated through the Development runtime before Production promotion.
 
+## Supported shell / environment verification
+
+Repository-backed operational scripts are supported on **PowerShell 7+ (`pwsh.exe`)**.
+
+Do not claim Windows operational compatibility from a `pwsh` test as if it also verified Windows PowerShell 5.1 (`powershell.exe`). Windows PowerShell 5.1 is not a supported Local Operations operational shell.
+
+When runtime compatibility matters, record the concrete environment:
+- OS
+- shell executable
+- shell version
+- PSEdition
+- runtime checkout
+- Tunnel profile
+- relevant encoding assumption
+
+A Human-observed Windows PowerShell 5.1 failure showed that UTF-8 BOM-less scripts containing non-ASCII diagnostics can be mis-decoded before any API-key or Worker-Pool validation executes. Treat parser failure, Worker configuration HOLD, and Tunnel/MCP runtime failure as distinct failure classes.
+
+Current Human-confirmed Worker settings:
+- Worker root: `C:\Dev\WorkerRoot`
+- Worker count: `5`
+- Runtime config: `%LOCALAPPDATA%\LocalOperations\worker-pool.json`
+
+Windows User environment changes require runtime restart before the existing MCP process can observe them.
+
+See `work/gwi-0010/VALIDATION_KNOWLEDGE.md` for derived operational knowledge.
+
 ## Operational scripts
 
 Repository-backed scripts must include:
