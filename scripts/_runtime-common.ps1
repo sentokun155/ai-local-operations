@@ -147,10 +147,16 @@ function Wait-TunnelReady([int]$Port, [int]$TimeoutSeconds = 25) {
     return $false
 }
 
-function Show-RuntimeHealth([string]$Name, [int]$Port) {
+function Show-RuntimeHealth([string]$Name, [int]$Port, [string]$Profile) {
     $base = "http://127.0.0.1:$Port"
-    if (Wait-TunnelReady $Port) { Write-Host "[$Name] READY: $base/ui" }
-    else { Write-Warning "[$Name] READYを確認できません。診断UI: $base/ui" }
+    if (-not (Wait-TunnelReady $Port)) { throw "[$Name] READYを確認できません。診断UI: $base/ui" }
+    Start-Sleep -Seconds 2
+    $readyAgain = Wait-TunnelReady $Port -TimeoutSeconds 2
+    $profileProcesses = @(Get-ProfileProcesses $Profile)
+    if (-not $readyAgain -or $profileProcesses.Count -eq 0) {
+        throw "[$Name] READY_STABILITY_FAILED: READYが安定しません。Tunnel profileとMCP commandを確認してください。"
+    }
+    Write-Host "[$Name] READY: $base/ui"
 }
 
 function Start-OneRuntime([string]$Name, [string]$Root, [string]$Profile, [int]$Port, [string]$ExpectedBranch) {
@@ -160,7 +166,7 @@ function Start-OneRuntime([string]$Name, [string]$Root, [string]$Profile, [int]$
         Assert-DistinctTunnelProfiles
         $null = Sync-RuntimeBranch -Root $Root -ExpectedBranch $ExpectedBranch
         Start-TunnelProfile $Profile
-        Show-RuntimeHealth $Name $Port
+        Show-RuntimeHealth $Name $Port $Profile
         return $true
     } catch {
         Write-Error "[$Name] $($_.Exception.Message)" -ErrorAction Continue

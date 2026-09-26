@@ -94,6 +94,29 @@ if (-not $script:started) { exit 2 }
         )
 
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is not installed")
+    def test_runtime_health_rejects_a_transient_ready_listener(self):
+        command = r'''
+$ErrorActionPreference = "Stop"
+. "./scripts/_runtime-common.ps1"
+$script:healthCalls = 0
+function Wait-TunnelReady([int]$Port, [int]$TimeoutSeconds = 25) {
+    $script:healthCalls++
+    return $script:healthCalls -eq 1
+}
+function Get-ProfileProcesses([string]$Profile) { return @([pscustomobject]@{ProcessId=1}) }
+function Start-Sleep([int]$Seconds) { }
+$script:correctFailure = $false
+try { Show-RuntimeHealth 'Development' 8081 'local-operations-dev' }
+catch { $script:correctFailure = $_.Exception.Message.Contains('READY_STABILITY_FAILED') }
+if (-not $script:correctFailure) { exit 1 }
+if ($script:healthCalls -ne 2) { exit 2 }
+'''
+        subprocess.run(
+            ["pwsh", "-NoProfile", "-Command", command],
+            cwd=ROOT, check=True, capture_output=True, text=True,
+        )
+
+    @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is not installed")
     def test_all_repository_backed_scripts_parse(self):
         files = [*SCRIPTS.glob("*.ps1"), ROOT / "setup.ps1", ROOT / "start-all.ps1", ROOT / "restart-dev.ps1", ROOT / "restart-prod.ps1"]
         for path in files:

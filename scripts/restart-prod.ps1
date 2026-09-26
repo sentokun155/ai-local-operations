@@ -10,4 +10,4 @@ $null = Sync-RuntimeBranch -Root $script:ProdRoot -ExpectedBranch "main"
 Assert-NoWorkerLeases $script:ProdRoot
 Stop-TunnelProfile $script:ProdProfile
 Start-TunnelProfile $script:ProdProfile
-Show-RuntimeHealth "Production" $script:ProdPort
+Show-RuntimeHealth "Production" $script:ProdPort $script:ProdProfile

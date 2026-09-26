@@ -11,4 +11,4 @@ $null = Sync-RuntimeBranch -Root $script:DevRoot -ExpectedBranch ([string]$branc
 Assert-NoWorkerLeases $script:DevRoot
 Stop-TunnelProfile $script:DevProfile
 Start-TunnelProfile $script:DevProfile
-Show-RuntimeHealth "Development" $script:DevPort
+Show-RuntimeHealth "Development" $script:DevPort $script:DevProfile
