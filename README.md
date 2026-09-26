@@ -16,6 +16,15 @@ The prototype's `.venv`, Python cache, and machine-local runtime data are not so
 
 
 
+
+## Design proportionality
+
+This is a personal local tool. Development / Production naming separates the experimental local runtime from the normally used local runtime; it does **not** imply customer-facing deployment discipline.
+
+Operational guards should exist only for concrete local risks such as credential exposure, destructive data loss, wrong/duplicate dispatch, Worker concurrency, or Tunnel/process collision. Production-style immutability, clean-checkout enforcement, strict promotion machinery, or exact revision equality are not goals by themselves.
+
+If an existing mechanism is later found to be unnecessarily strict, do not create churn only to remove it. On the next real modification to that area, simplify it comprehensively, update tests/docs with the same change, and verify the supported runtime once.
+
 ## Supported operational shell
 
 Local OperationsのRepository-backed operational scriptsは **PowerShell 7+ (`pwsh.exe`)** を正式な実行環境とします。
