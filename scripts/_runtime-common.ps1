@@ -37,12 +37,22 @@ function Get-ConfiguredTunnelId([string]$Profile) {
     return $id.Groups[1].Value
 }
 
+function Test-ProfileRuntimeCommand([string]$Content, [string]$ExpectedCommand) {
+    $yamlEscapedCommand = $ExpectedCommand.Replace('\', '\\').Replace('"', '\"')
+    return $Content.Contains($ExpectedCommand) -or $Content.Contains($yamlEscapedCommand)
+}
+
 function Assert-ProfileRuntime([string]$Profile, [string]$Root) {
     $id = Get-ConfiguredTunnelId $Profile
     $path = Join-Path $env:APPDATA "tunnel-client/$Profile.yaml"
     $content = Get-Content -LiteralPath $path -Raw
     $expectedCommand = "uv --directory `"$Root`" run --locked python server.py"
-    if (-not $content.Contains($expectedCommand)) { throw "[$Profile] MCP commandが対象runtime checkoutを指していません。" }
+    if (-not (Test-ProfileRuntimeCommand -Content $content -ExpectedCommand $expectedCommand)) { throw "[$Profile] MCP commandが対象runtime checkoutを指していません。" }
+    if ($Root -eq $script:DevRoot) { $expectedHealthAddress = "127.0.0.1:$($script:DevPort)" }
+    elseif ($Root -eq $script:ProdRoot) { $expectedHealthAddress = "127.0.0.1:$($script:ProdPort)" }
+    else { throw "[$Profile] 未登録runtime rootです。" }
+    $healthAddress = [Regex]::Match($content, '(?im)^\s*listen_addr:\s*["'']?([^"''\s#]+)').Groups[1].Value
+    if ($healthAddress -ne $expectedHealthAddress) { throw "[$Profile] health listenerは$expectedHealthAddressである必要があります。" }
     return $id
 }
 

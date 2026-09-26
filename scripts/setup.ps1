@@ -45,10 +45,17 @@ if ($ConfigureProfiles) {
     )) {
         $profilePath = Join-Path $env:APPDATA "tunnel-client/$($item.Profile).yaml"
         $expectedCommand = "uv --directory `"$($item.Root)`" run --locked python server.py"
+        $expectedHealthAddress = "127.0.0.1:$($item.Port)"
         if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
             $content = Get-Content -LiteralPath $profilePath -Raw
             $tunnelMatch = [Regex]::Match($content, '(?im)^\s*tunnel_id:\s*["'']?([^"''\s#]+)')
-            $isCurrent = $content.Contains($expectedCommand) -and $tunnelMatch.Success -and $tunnelMatch.Groups[1].Value -eq $item.Id
+            $healthAddress = [Regex]::Match($content, '(?im)^\s*listen_addr:\s*["'']?([^"''\s#]+)').Groups[1].Value
+            $isCurrent = (
+                (Test-ProfileRuntimeCommand -Content $content -ExpectedCommand $expectedCommand) -and
+                $healthAddress -eq $expectedHealthAddress -and
+                $tunnelMatch.Success -and $tunnelMatch.Groups[1].Value -eq $item.Id -and
+                $content.Contains("env:CONTROL_PLANE_API_KEY")
+            )
             if ($isCurrent) { Write-Host "[$($item.Profile)] profileは設定済みです。"; continue }
             if (-not $ReplaceExistingProfiles) { throw "[$($item.Profile)] profileが既存設定と異なります。安全のため上書きしません。必要ならReplaceExistingProfilesを明示してください。" }
         }

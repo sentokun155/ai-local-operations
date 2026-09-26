@@ -58,6 +58,23 @@ class RuntimeScriptBoundaryTests(unittest.TestCase):
             self.assertIn("WORKERS_LEASED", result.stdout)
 
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is not installed")
+    def test_profile_command_validator_accepts_tunnel_client_yaml_escaping(self):
+        command = r'''
+$ErrorActionPreference = "Stop"
+. "./scripts/_runtime-common.ps1"
+$expected = 'uv --directory "C:\Dev\DevEnv" run --locked python server.py'
+$serialized = $expected.Replace('\', '\\').Replace('"', '\"')
+$yaml = 'command: "' + $serialized + '"'
+if (-not (Test-ProfileRuntimeCommand -Content $yaml -ExpectedCommand $expected)) { exit 1 }
+$wrong = $expected.Replace('DevEnv', 'ProdEnv')
+if (Test-ProfileRuntimeCommand -Content $yaml -ExpectedCommand $wrong) { exit 2 }
+'''
+        subprocess.run(
+            ["pwsh", "-NoProfile", "-Command", command],
+            cwd=ROOT, check=True, capture_output=True, text=True,
+        )
+
+    @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is not installed")
     def test_all_repository_backed_scripts_parse(self):
         files = [*SCRIPTS.glob("*.ps1"), ROOT / "setup.ps1", ROOT / "start-all.ps1", ROOT / "restart-dev.ps1", ROOT / "restart-prod.ps1"]
         for path in files:
