@@ -174,3 +174,23 @@ GWI-0010の次のremediation / verificationでは:
 - その後Chat → Dev Plugin → Worker Pool → Codex → Chatの実E2Eへ進む
 
 T001のhistorical Task Requestは変更せず、以後のTask Requestが本知見を参照する。
+
+
+## K10 — Personal-tool proportionality / deferred simplification
+
+Human clarified that Local Operations is a personal local tool, not a customer-facing production service.
+
+Therefore production-style operational strictness is not valuable by default. New or existing guards must be justified by a concrete local risk such as:
+
+- credential exposure
+- destructive data loss
+- wrong / duplicate dispatch
+- Worker concurrency
+- Tunnel/process collision
+- explicit authority escalation
+
+Clean-checkout purity, immutable runtime discipline, strict promotion, or exact local/remote revision equality are not goals by themselves.
+
+Existing over-engineered behavior should not be rewritten immediately if doing so would create another implementation + verification cycle with no current benefit. Instead, when the affected area next needs a real change, that bounded change must simplify the area comprehensively rather than add another exception layer. Source, tests, and documentation must be updated together, followed by one verification against the actual supported runtime.
+
+This rule is normative through root `AGENTS.md`.
