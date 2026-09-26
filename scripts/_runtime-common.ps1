@@ -37,9 +37,24 @@ function Get-ConfiguredTunnelId([string]$Profile) {
     return $id.Groups[1].Value
 }
 
+function Normalize-ProfileRuntimeCommand([string]$Command) {
+    $value = $Command.Trim()
+    if ($value.StartsWith('"') -and $value.EndsWith('"')) {
+        $value = $value.Substring(1, $value.Length - 2)
+    }
+    $value = $value.Replace('\\', '\').Replace('\"', '"')
+    $value = $value.Replace('\', '/').Replace('"', '').Replace("'", '')
+    $value = [Regex]::Replace($value, '\s+', ' ').Trim()
+    return $value.ToLowerInvariant()
+}
+
 function Test-ProfileRuntimeCommand([string]$Content, [string]$ExpectedCommand) {
-    $yamlEscapedCommand = $ExpectedCommand.Replace('\', '\\').Replace('"', '\"')
-    return $Content.Contains($ExpectedCommand) -or $Content.Contains($yamlEscapedCommand)
+    $expected = Normalize-ProfileRuntimeCommand $ExpectedCommand
+    $commandLines = [Regex]::Matches($Content, '(?im)^\s*command:\s*(?<value>.*?)\s*(?:#.*)?$')
+    foreach ($line in $commandLines) {
+        if ((Normalize-ProfileRuntimeCommand $line.Groups['value'].Value) -eq $expected) { return $true }
+    }
+    return $false
 }
 
 function Assert-ProfileRuntime([string]$Profile, [string]$Root) {

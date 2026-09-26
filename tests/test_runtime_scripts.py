@@ -58,7 +58,7 @@ class RuntimeScriptBoundaryTests(unittest.TestCase):
             self.assertIn("WORKERS_LEASED", result.stdout)
 
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is not installed")
-    def test_profile_command_validator_accepts_tunnel_client_yaml_escaping(self):
+    def test_profile_command_validator_accepts_windows_path_spellings(self):
         command = r'''
 $ErrorActionPreference = "Stop"
 . "./scripts/_runtime-common.ps1"
@@ -66,8 +66,13 @@ $expected = 'uv --directory "C:\Dev\DevEnv" run --locked python server.py'
 $serialized = $expected.Replace('\', '\\').Replace('"', '\"')
 $yaml = 'command: "' + $serialized + '"'
 if (-not (Test-ProfileRuntimeCommand -Content $yaml -ExpectedCommand $expected)) { exit 1 }
+$forwardSlash = 'command: "uv --directory C:/Dev/DevEnv run --locked python server.py"'
+if (-not (Test-ProfileRuntimeCommand -Content $forwardSlash -ExpectedCommand $expected)) { exit 2 }
+$unquotedPath = 'command: "uv --directory C:\\Dev\\DevEnv run --locked python server.py"'
+if (-not (Test-ProfileRuntimeCommand -Content $unquotedPath -ExpectedCommand $expected)) { exit 3 }
 $wrong = $expected.Replace('DevEnv', 'ProdEnv')
-if (Test-ProfileRuntimeCommand -Content $yaml -ExpectedCommand $wrong) { exit 2 }
+if (Test-ProfileRuntimeCommand -Content $yaml -ExpectedCommand $wrong) { exit 4 }
+if (Test-ProfileRuntimeCommand -Content 'comment: command: uv --directory C:/Dev/DevEnv run --locked python server.py' -ExpectedCommand $expected) { exit 5 }
 '''
         subprocess.run(
             ["pwsh", "-NoProfile", "-Command", command],
