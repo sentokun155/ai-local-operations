@@ -99,6 +99,38 @@ if (-not $script:started) { exit 2 }
         )
 
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is not installed")
+    def test_stop_profile_force_stops_only_a_process_tree_that_resists_graceful_stop(self):
+        command = r'''
+$ErrorActionPreference = "Stop"
+. "./scripts/_runtime-common.ps1"
+$script:running = $true
+$script:killCalls = @()
+function Get-ProfileProcesses([string]$Profile) {
+    if ($Profile -ne 'local-operations-dev') { exit 1 }
+    return @([pscustomobject]@{ProcessId=7312})
+}
+function taskkill.exe([Parameter(ValueFromRemainingArguments=$true)][string[]]$Arguments) {
+    $script:killCalls += ,($Arguments -join ' ')
+    if ($Arguments -contains '/F') { $script:running = $false; $global:LASTEXITCODE = 0 }
+    else { $global:LASTEXITCODE = 128 }
+}
+function Get-Process([int]$Id, [string]$ErrorAction) {
+    if ($script:running) { return [pscustomobject]@{Id=$Id} }
+    return $null
+}
+function Start-Sleep([int]$Seconds, [int]$Milliseconds) { }
+Stop-TunnelProfile 'local-operations-dev'
+if ($script:killCalls.Count -ne 2) { exit 2 }
+if ($script:killCalls[0] -notmatch '/PID 7312 /T' -or $script:killCalls[0] -match '/F') { exit 3 }
+if ($script:killCalls[1] -notmatch '/PID 7312 /T /F') { exit 4 }
+if ($script:running) { exit 5 }
+'''
+        subprocess.run(
+            ["pwsh", "-NoProfile", "-Command", command],
+            cwd=ROOT, check=True, capture_output=True, text=True,
+        )
+
+    @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is not installed")
     def test_runtime_health_rejects_a_transient_ready_listener(self):
         command = r'''
 $ErrorActionPreference = "Stop"

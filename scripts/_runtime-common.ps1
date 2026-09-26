@@ -134,7 +134,12 @@ function Stop-TunnelProfile([string]$Profile) {
     $processes = Get-ProfileProcesses $Profile
     foreach ($proc in $processes) {
         & taskkill.exe /PID $proc.ProcessId /T 2>$null | Out-Null
-        if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $proc.ProcessId -ErrorAction SilentlyContinue)) {
+        Start-Sleep -Milliseconds 750
+        if (Get-Process -Id $proc.ProcessId -ErrorAction SilentlyContinue) {
+            & taskkill.exe /PID $proc.ProcessId /T /F 2>$null | Out-Null
+            Start-Sleep -Milliseconds 250
+        }
+        if (Get-Process -Id $proc.ProcessId -ErrorAction SilentlyContinue) {
             throw "[$Profile] tunnel-clientを安全に停止できませんでした。"
         }
     }
