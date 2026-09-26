@@ -14,6 +14,29 @@ The pre-repository prototype at `C:\Dev\local-mcp` contained `server.py`, `src/l
 
 The prototype's `.venv`, Python cache, and machine-local runtime data are not source. No API key, tunnel credential, Codex credential, `.env`, dispatch SQLite database, Worker clone, log, cache, or temporary Evidence is committed. The old `C:\Dev\local-mcp` tree is migration input only.
 
+
+
+## Supported operational shell
+
+Local OperationsのRepository-backed operational scriptsは **PowerShell 7+ (`pwsh.exe`)** を正式な実行環境とします。
+
+Windows PowerShell 5.1 (`powershell.exe`) は正式サポート対象ではありません。T001後の実環境確認で、UTF-8 BOMなしのscriptに含まれる日本語文字列がWindows PowerShell 5.1で誤decodeされ、`_runtime-common.ps1` のParserErrorへ連鎖することを確認しました。これはAPI keyやWorker Pool設定の問題ではありません。
+
+PowerShell関連のRepository testsも `pwsh` を使用しているため、Humanの手動運用も同じshellへ合わせます。
+
+確認:
+
+```powershell
+$PSVersionTable.PSVersion
+$PSVersionTable.PSEdition
+```
+
+期待値はPowerShell 7以上かつ `PSEdition = Core` です。
+
+「Windowsで検証済み」だけでは互換性を主張しません。runtime依存の検証ではOSに加えてshell executable / version / PSEditionを記録します。
+
+詳細なderived knowledgeは [`work/gwi-0010/VALIDATION_KNOWLEDGE.md`](work/gwi-0010/VALIDATION_KNOWLEDGE.md) を参照してください。
+
 ## Development and Production Tunnel profiles
 
 | Environment | Plugin | Profile | Runtime checkout | Health/UI port |
@@ -46,14 +69,21 @@ Finish and release tasks before restarting. Legacy explicit-path tasks are not r
 
 After changing MCP tool schemas: restart the corresponding Tunnel; in ChatGPT Web open its Plugin and choose **Manage → Update tools**; confirm the tool list and use a new chat if it remains stale.
 
+Windows User environment variable changes are inherited only by newly started processes. After changing `CONTROL_PLANE_API_KEY`, `LOCAL_OPERATIONS_WORKER_ROOT`, or `LOCAL_OPERATIONS_WORKER_POOL_CONFIG`, open a new `pwsh` session as needed, restart the target Tunnel/MCP runtime, then verify the effective state through the MCP tools.
+
 ## Worker Pool V0
 
-Copy and edit [`config/worker-pool.example.json`](config/worker-pool.example.json), for example to `%LOCALAPPDATA%\LocalOperations\worker-pool.json`, then set these local environment variables:
+Copy and edit [`config/worker-pool.example.json`](config/worker-pool.example.json) to `%LOCALAPPDATA%\LocalOperations\worker-pool.json`.
+
+Current Human-confirmed local values:
 
 ```text
-LOCAL_OPERATIONS_WORKER_POOL_CONFIG=<path to worker-pool.json>
-LOCAL_OPERATIONS_WORKER_ROOT=<local directory for Worker Slots>
+LOCAL_OPERATIONS_WORKER_POOL_CONFIG=%LOCALAPPDATA%\LocalOperations\worker-pool.json
+LOCAL_OPERATIONS_WORKER_ROOT=C:\Dev\WorkerRoot
+workerCount=5
 ```
+
+These are machine-local runtime settings. The repository keeps the example/schema, not the machine-local config file itself.
 
 Machine-specific paths are not stored in the repository config. `workerCount` is bounded from 1 to 16. Managed repositories are bounded to 32 entries; each entry supplies `identity` (`owner/name`), `cloneUrl`, and `defaultBranch`. URLs with embedded credentials are rejected. The example lists the repositories owned or used in this workflow; edit it to match the managed set and verified default branches.
 
