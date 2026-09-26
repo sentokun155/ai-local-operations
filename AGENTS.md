@@ -38,6 +38,34 @@ Do not:
 
 If expected remote / branch / Task Request identity does not match, stop and report HOLD.
 
+## Runtime topology
+
+Canonical source is this GitHub repository.
+
+Development runtime checkout:
+
+`C:\Dev\DevEnv`
+
+Production runtime checkout:
+
+`C:\Dev\ProdEnv`
+
+Worker Slot clones of `ai-local-operations` are implementation workspaces only. Do not run the Production or Development MCP directly from a leased Worker Slot.
+
+Development:
+- Plugin: `Local Operations Dev`
+- tunnel-client profile: `local-operations-dev`
+- runtime: `C:\Dev\DevEnv`
+- separate Tunnel ID from Production
+
+Production:
+- Plugin: `Local Operations`
+- tunnel-client profile: `local-operations`
+- runtime: `C:\Dev\ProdEnv`
+- separate Tunnel ID from Development
+
+Do not share one Tunnel ID between Dev and Prod.
+
 ## Secret / runtime boundary
 
 Never commit:
@@ -51,7 +79,13 @@ Never commit:
 - local logs / caches / temp files
 - virtual environments
 
-If current `C:\Dev\local-mcp` contains any of these, exclude them during migration.
+Standard tunnel runtime credential is read from the Windows User environment variable:
+
+`CONTROL_PLANE_API_KEY`
+
+Scripts must not accept the key as a command-line argument, print it, or persist it into the repository.
+
+If current `C:\Dev\local-mcp` contains secrets/runtime state, exclude them during migration.
 
 ## Implementation principles
 
@@ -62,9 +96,22 @@ If current `C:\Dev\local-mcp` contains any of these, exclude them during migrati
 - Local path / Worker Slot / concrete Codex cwd resolution is a Local Operations responsibility.
 - One Worker Slot may be leased to only one active Task.
 - Codex cwd must be the selected repository root, not the Worker root.
+- Codex Desktop Project registration is optional UI organization, not Worker routing authority.
 - Unexpected local state is quarantined, not silently reset or deleted.
 - `DISPATCHED` means turn/start acknowledgement, not Task completion.
 - Duplicate / uncertain dispatch must not create a second Task under the same identity.
+- Candidate revisions are validated through the Development runtime before Production promotion.
+
+## Operational scripts
+
+Repository-backed scripts must include:
+
+- `scripts/setup.ps1`
+- `scripts/start-all.ps1`
+- `scripts/restart-dev.ps1`
+- `scripts/restart-prod.ps1`
+
+Scripts must preserve Dev / Prod isolation and must not use destructive Git cleanup to recover unexpected runtime checkout state.
 
 ## Verification
 
