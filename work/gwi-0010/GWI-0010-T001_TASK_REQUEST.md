@@ -15,6 +15,8 @@ Tracking Issue: https://github.com/sentokun155/ai-dev-control/issues/16
 
 そのうえで、Chatがlocal absolute pathを知らなくてもRepository-backed TaskをCodexへdispatchでき、local checkoutが依頼ごとに無制限増加しないよう、**固定Local Worker Pool V0**を実装する。
 
+同時にLocal Operations自身を安全に開発・検証できるよう、Worker Planeとは独立したDevelopment / Production runtime checkoutとTunnelを成立させる。
+
 ## 2. Superseded assumption
 
 以前の実装依頼では、logical repositoryから既存checkout / Codex native workspaceを発見するWorkspace Resolutionを主候補としていた。
@@ -29,6 +31,8 @@ Tracking Issue: https://github.com/sentokun155/ai-dev-control/issues/16
 - dispatch時にFREE Slotをleaseし、そのSlot内の対象Repositoryを使用する。
 - Task完了後に安全性を確認してclean baselineへ戻し、Slotを再利用する。
 - Git worktreeはV0必須ではない。
+- Local Operations runtimeはWorker Slot外へ分離する。
+- Development / Production MCP runtimeを分離する。
 
 前回実装済みのCodex app-server adapter、DispatchReceipt、duplicate ledger、model compatibility、Task Request identity validation等は、Current Stateを監査して再利用可能なら保持する。先に削除・再実装しない。
 
@@ -43,6 +47,7 @@ Tracking Issue: https://github.com/sentokun155/ai-dev-control/issues/16
 - root `README.md`
 - `.gitignore`
 - GWI-0010 Tracking Issue
+- existing Draft PR #1
 
 ### 3.2 Existing local prototype
 
@@ -59,6 +64,7 @@ Tracking Issue: https://github.com/sentokun155/ai-dev-control/issues/16
 - duplicate / uncertain dispatch ledger
 - Task Request Git blob / branch / commit verification
 - Secure MCP Tunnel起動前提
+- current tunnel-client profile / startup behavior
 
 ### 3.3 Do not import local-only state
 
@@ -79,15 +85,166 @@ Tracking Issue: https://github.com/sentokun155/ai-dev-control/issues/16
 
 移行後は、本Repositoryのcommitted sourceをLocal Operations implementationのCanonical sourceとする。
 
-Local runtime deployment / sync方法をREADMEへ明示する。
-
 Local `C:\Dev\local-mcp` を直接編集し続ける二重Authorityを正常運用にしない。
 
-必要ならRepository checkout自体をLocal MCP runtime sourceとして使う方式、または明示deploy/sync方式を選定し、理由を記録する。
+Historical prototypeからRepositoryへimportした後、Development / Production runtimeはそれぞれGit checkoutとしてCanonical Repository revisionから更新する。
 
-## 5. Worker Pool V0
+## 5. Runtime topology
 
-### 5.1 Worker model
+### 5.1 Canonical source
+
+`sentokun155/ai-local-operations`
+
+### 5.2 Development runtime
+
+Absolute runtime checkout:
+
+`C:\Dev\DevEnv`
+
+Purpose:
+- candidate / GWI branch revisionの動作確認
+- Development MCP server
+- Development Tunnel
+- ChatGPT `Local Operations Dev` Pluginから利用
+
+Profile:
+
+`local-operations-dev`
+
+Development Tunnel IDはProductionと別にする。
+
+### 5.3 Production runtime
+
+Absolute runtime checkout:
+
+`C:\Dev\ProdEnv`
+
+Purpose:
+- accepted / main revisionの安定運用
+- Production MCP server
+- Production Tunnel
+- ChatGPT `Local Operations` Pluginから利用
+
+Profile:
+
+`local-operations`
+
+Production Tunnel IDはDevelopmentと別にする。
+
+### 5.4 Worker/runtime separation
+
+Worker Slot内の `ai-local-operations` cloneは実装作業場所。
+
+Development / Production MCP serverをleased Worker Slotから直接起動しない。
+
+通常flow:
+
+```text
+Worker Slotで実装
+→ commit / non-force push
+→ C:\Dev\DevEnv をcandidate revisionへ安全に同期
+→ Development Tunnel再起動
+→ Local Operations Devで検証
+→ acceptance / merge
+→ C:\Dev\ProdEnv をaccepted mainへ安全に同期
+→ Production Tunnel再起動
+```
+
+Dev / Prod runtime checkoutでunexpected dirty state / divergenceがある場合、自動resetで破棄せずHOLD。
+
+## 6. Runtime API key
+
+標準runtime credentialはWindows User environment variable:
+
+`CONTROL_PLANE_API_KEY`
+
+を利用する。
+
+Requirements:
+
+- Repositoryへkeyを保存しない。
+- `.env`へ必須保存する設計にしない。
+- restart / startup scriptへkeyをcommand-line argumentで渡さない。
+- keyの実値をstdout / log / Tool responseへ表示しない。
+- Dev / Prodで同じRestricted Runtime keyを共有可能。
+- Development / Productionは別Tunnel ID。
+- 将来のDev / Prod key分離を妨げない。
+
+`CONTROL_PLANE_API_KEY` 未設定時は安全に起動を停止し、設定不足のみを表示する。
+
+## 7. Operational scripts
+
+Repository-backed PowerShell scriptsを実装する。
+
+### 7.1 `scripts/setup.ps1`
+
+Initial setup / validation専用。
+
+最低限:
+
+- `C:\Dev\DevEnv` / `C:\Dev\ProdEnv` のruntime layoutを準備または検証
+- expected repository identityを確認
+- required tools / dependencyの存在確認
+- Development / Production profile設定前提を確認
+- `CONTROL_PLANE_API_KEY` の存在確認
+- secret valueを表示しない
+- runtime checkoutへsecretを書き込まない
+- destructive recoveryをしない
+- 不足事項をactionableに報告
+
+API keyそのものをscriptへ埋め込まない。
+
+### 7.2 `scripts/start-all.ps1`
+
+PC起動時等の通常起動。
+
+最低限:
+
+- Development / Production両Tunnelを起動
+- 同じenvironmentを二重起動しない
+- Dev / Prodを別process / profileとして扱う
+- 起動後にそれぞれのhealth / admin UI確認先を表示
+- 起動失敗をenvironment別に診断可能
+- 一方の失敗で他方を不必要に停止しない
+
+### 7.3 `scripts/restart-dev.ps1`
+
+Development専用。
+
+- runtime: `C:\Dev\DevEnv`
+- profile: `local-operations-dev`
+- Production process / checkoutへ触れない
+- candidate branch / revisionの実行を許容
+- dirty/divergenceを破棄しない
+- safe update / restart / health確認
+
+### 7.4 `scripts/restart-prod.ps1`
+
+Production専用。
+
+- runtime: `C:\Dev\ProdEnv`
+- profile: `local-operations`
+- Development process / checkoutへ触れない
+- expected accepted/main revision policyを維持
+- GWI candidate branchを暗黙実行しない
+- dirty/divergenceを破棄しない
+- safe update / restart / health確認
+
+### 7.5 Tool Catalog refresh documentation
+
+MCP Tool schemaを変更した場合:
+
+1. 対象Tunnelを再起動
+2. ChatGPT Webで対象Pluginを開く
+3. 管理 → ツールの更新
+4. Tool listを確認
+5. staleなら新規Chatで再確認
+
+をREADMEへ残す。
+
+## 8. Worker Pool V0
+
+### 8.1 Worker model
 
 固定数のWorker Slotを設定可能にする。
 
@@ -104,7 +261,7 @@ Worker数はコード固定値にせずconfigurationで変更可能にする。
 
 Testsでは2 Slot等の小さいfixtureを使用してよい。
 
-### 5.2 Worker layout
+### 8.2 Worker layout
 
 Human intent:
 
@@ -130,7 +287,9 @@ Codexへ渡すcwdはWorker rootではなく、対象Repository root。
 
 同じSlot内の他Repositoryを通常Task workspaceとして渡さない。
 
-### 5.3 Managed repository configuration
+Codex Desktop Project登録はrouting Authorityにしない。Local Operationsがresolved Repository rootをapp-server cwdとして明示する。
+
+### 8.3 Managed repository configuration
 
 managed Repositoryはconfigurationで定義する。
 
@@ -140,13 +299,15 @@ managed Repositoryはconfigurationで定義する。
 - clone/fetch URL
 - default branch
 
-actual local worker root / slot count等はlocal configurationとして扱い、machine-specific absolute pathをRepository Canonical dataへ固定しない。
+actual local worker root / slot count等はlocal configurationとして扱い、machine-specific Worker absolute pathをRepository Canonical dataへ固定しない。
+
+Dev / Prod runtime pathは本TaskでHumanが明示したruntime topologyとして固定する。
 
 example config / schemaはGit管理可能。
 
 credentialはGit管理しない。
 
-### 5.4 Pool bootstrap
+### 8.4 Pool bootstrap
 
 既存Slotが無い場合に、boundedな明示bootstrap手順を提供する。
 
@@ -158,7 +319,7 @@ bootstrapはgeneric arbitrary shell MCP Toolとして公開しない。
 
 CLI/admin operationまたは用途限定maintenance entrypointでよい。
 
-## 6. Dispatch input contract
+## 9. Dispatch input contract
 
 正常系のChat入力からlocal absolute pathを除く。
 
@@ -182,7 +343,7 @@ pull_request?         # optional, if useful for preflight
 
 Tool schema変更後はREADMEへbefore/afterを記録する。
 
-## 7. Worker allocation
+## 10. Worker allocation
 
 dispatch時:
 
@@ -197,7 +358,7 @@ FREE Slotが無ければHOLD。
 
 同じSlotを2 Taskへ割当しない。
 
-## 8. Repository preflight
+## 11. Repository preflight
 
 対象Workerの対象Repositoryについて、Codex dispatch前に最低限確認する。
 
@@ -214,7 +375,7 @@ FREE Slotが無ければHOLD。
 - committed Git blobと一致
 - repository commitを固定
 
-### 8.1 PR-aware check
+### 11.1 PR-aware check
 
 TaskにPRが明示されている場合、可能ならPR head branchとrequested branchの一致を確認する。
 
@@ -222,7 +383,7 @@ GitHub CLI/API等のstable local capabilityが必要で利用不能なら、無�
 
 PRがまだ無いTaskを必ずHOLDする仕様にはしない。
 
-### 8.2 Preparation
+### 11.2 Preparation
 
 安全に準備できる場合のみ:
 
@@ -236,7 +397,7 @@ unexpected divergence / local-only commit / dirty stateを `reset --hard` や `c
 
 問題があればSlotを `DIRTY` / `QUARANTINED` としてdispatchしない。
 
-## 9. Codex dispatch
+## 12. Codex dispatch
 
 既存の安全境界を維持する。
 
@@ -252,7 +413,7 @@ Thread nameは `Task Key + Human-readable Task Name` を維持する。
 
 model / reasoning effort compatibility checkを維持する。
 
-## 10. Duplicate / uncertain outcome semantics
+## 13. Duplicate / uncertain outcome semantics
 
 既存 `work_identity + task_key` ledgerを維持する。
 
@@ -266,7 +427,7 @@ dispatch failure時にSlotが永久LEASEDにならないよう、失敗classご�
 
 ただしoutcome uncertain時に誤ってFREEへ戻してduplicate dispatchを許さない。
 
-## 11. Completion / release V0
+## 14. Completion / release V0
 
 Codex Task completionとWorker releaseを分離する。
 
@@ -279,7 +440,7 @@ V0でcompletionを自動観測するstable routeが無い場合、用途限定�
 
 名称は実装時に調整可能。
 
-### 11.1 Release gate
+### 14.1 Release gate
 
 WorkerをFREEへ戻す前に最低限確認:
 
@@ -290,7 +451,7 @@ WorkerをFREEへ戻す前に最低限確認:
 - Repository-backed Result / Evidence requirementがTask Requestにある場合、それを破壊しない
 - Codex/app-server processが当該workspaceを実行中ではない
 
-### 11.2 Baseline restore
+### 14.2 Baseline restore
 
 release可能なら対象Repositoryをdefault branch等のclean baselineへ戻す。
 
@@ -311,7 +472,7 @@ release可能なら対象Repositoryをdefault branch等のclean baselineへ戻�
 
 他managed RepositoryもTask中に変更されていないか、Slot再利用前に必要範囲で確認する。
 
-## 12. Worker Pool persistence
+## 15. Worker Pool persistence
 
 Worker lease stateはlocal runtime state。
 
@@ -334,7 +495,7 @@ SQLite等を利用してよい。
 
 既存dispatch ledgerと同一DBに統合するか別DBにするかは、atomicity /責務分離を比較して決める。
 
-## 13. Security
+## 16. Security
 
 維持:
 
@@ -347,16 +508,30 @@ SQLite等を利用してよい。
 
 Worker cloneにはユーザーのGit credential helper等が利用され得るため、credentialをconfigやlogへ展開しない。
 
-## 14. Tests
+Dev / Prod Tunnel credentialは `CONTROL_PLANE_API_KEY` を環境から取得し、Repository-backed sourceやprocess command lineへsecretを展開しない。
 
-### 14.1 Migration regression
+## 17. Tests
+
+### 17.1 Migration regression
 
 - `ping` PASS
 - `ping2` PASS
 - existing dispatch prototype behavior regressionなし
 - README/startup route確認
 
-### 14.2 Worker Pool unit
+### 17.2 Runtime topology / script tests
+
+可能な範囲でprocess invocationをmock / fixture化し、最低限:
+
+- setupがAPI key未設定をsecret漏洩なく検出
+- restart-devがProdへ触れない
+- restart-prodがDevへ触れない
+- Dev / Prodが別profile
+- same environment duplicate startを防ぐ
+- dirty runtime checkoutを破棄しない
+- candidate revisionがProdへ暗黙導入されない
+
+### 17.3 Worker Pool unit
 
 - FREE→LEASED
 - same Slot duplicate lease拒否
@@ -369,7 +544,7 @@ Worker cloneにはユーザーのGit credential helper等が利用され得る�
 - local-only commit→release拒否
 - unexpected untracked/dirty stateを破棄しない
 
-### 14.3 Dispatch integration
+### 17.4 Dispatch integration
 
 - logical repository + branch + repo-relative Task Requestだけでdispatch
 - Chat/local callerはabsolute path不要
@@ -378,14 +553,14 @@ Worker cloneにはユーザーのGit credential helper等が利用され得る�
 - concrete `DISPATCHED` receipt取得
 - duplicate guard維持
 
-### 14.4 Release integration
+### 17.5 Release integration
 
 - successful probe後にexplicit/safe release
 - default branchへnon-destructive復帰
 - Worker再利用可能
 - unsafe stateはQUARANTINED
 
-### 14.5 E2E probe
+### 17.6 E2E probe
 
 実GWI Taskを使わない専用fixture repository / Task Requestで:
 
@@ -405,14 +580,19 @@ Chat-equivalent logical dispatch
 
 GWI-0006 / GWI-0009の実Taskをimplementation probeとして勝手に実行しない。
 
-## 15. Documentation
+Development runtime側でprobeする。Production runtimeへcandidate implementationを持ち込まない。
+
+## 18. Documentation
 
 READMEをRepository-backed operational guideとして更新。
 
 最低限:
 
+- Canonical source
+- Dev / Prod runtime topology
 - normal startup
 - Tool Catalog update
+- API key setup
 - deployment/source-of-truth model
 - configuration
 - Worker layout
@@ -425,9 +605,11 @@ READMEをRepository-backed operational guideとして更新。
 - security
 - troubleshooting
 
-machine-specific secret/pathの実値をcommitしない。
+machine-specific secretの実値をcommitしない。
 
-## 16. Repository reflection
+Human-confirmed runtime path `C:\Dev\DevEnv` / `C:\Dev\ProdEnv` は運用契約として明記してよい。
+
+## 19. Repository reflection
 
 実装・tests完了後:
 
@@ -435,17 +617,21 @@ machine-specific secret/pathの実値をcommitしない。
 2. normal non-force push。
 3. remote HEAD readback。
 4. changed critical files readback。
-5. `main` 向けmeaningful PRを作成または更新。
+5. existing Draft PR #1を更新。
 6. mergeはしない。
 7. Tracking Issue #16へResult receiptを残す。
 
-## 17. Completion report
+## 20. Completion report
 
 必須:
 
 - audited local prototype summary
 - imported / excluded files
 - source-of-truth migration方式
+- Dev / Prod runtime topology
+- Tunnel/profile separation
+- API key handling
+- operational scriptsと検証結果
 - Worker Pool architecture
 - configuration format
 - state machine
@@ -453,7 +639,7 @@ machine-specific secret/pathの実値をcommitしない。
 - dispatch Tool schema before/after
 - release Tool / admin interface
 - tests and exact results
-- E2E probe DispatchReceipt
+- Development E2E probe DispatchReceipt
 - Worker reuse/release evidence
 - security boundary
 - remaining limitations
@@ -462,12 +648,13 @@ machine-specific secret/pathの実値をcommitしない。
 - PR URL
 - Issue receipt URL
 
-## 18. Stop / HOLD conditions
+## 21. Stop / HOLD conditions
 
 次の場合は推測で進めずHOLD:
 
 - local prototypeにsecret混入があり安全なmigration boundaryを確定できない
 - Codex app-server behaviorがCurrent installed versionで確認できない
+- Dev / Prod Tunnel ID / profileを安全に区別できない
 - Worker cleanupにlocal-only state破棄が必要
 - repository identity / branch / Task Request blobを一意に確定できない
 - destructive Git操作なしでは回復できない
