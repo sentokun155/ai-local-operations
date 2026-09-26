@@ -127,7 +127,7 @@ function Stop-TunnelProfile([string]$Profile) {
 }
 
 function Start-TunnelProfile([string]$Profile) {
-    $existing = Get-ProfileProcesses $Profile
+    $existing = @(Get-ProfileProcesses $Profile)
     if ($existing.Count -gt 0) {
         Write-Host "[$Profile] 起動済みです。"
         return

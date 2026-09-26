@@ -75,6 +75,25 @@ if (Test-ProfileRuntimeCommand -Content $yaml -ExpectedCommand $wrong) { exit 2 
         )
 
     @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is not installed")
+    def test_start_profile_handles_no_existing_process_under_strict_mode(self):
+        command = r'''
+$ErrorActionPreference = "Stop"
+. "./scripts/_runtime-common.ps1"
+function Get-ProfileProcesses([string]$Profile) { return @() }
+function Start-Process([string]$FilePath, [string[]]$ArgumentList, [string]$WindowStyle) {
+    if ($WindowStyle -ne 'Hidden' -or $ArgumentList -notcontains '--profile') { exit 1 }
+    $script:started = $true
+}
+$script:started = $false
+Start-TunnelProfile 'probe'
+if (-not $script:started) { exit 2 }
+'''
+        subprocess.run(
+            ["pwsh", "-NoProfile", "-Command", command],
+            cwd=ROOT, check=True, capture_output=True, text=True,
+        )
+
+    @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is not installed")
     def test_all_repository_backed_scripts_parse(self):
         files = [*SCRIPTS.glob("*.ps1"), ROOT / "setup.ps1", ROOT / "start-all.ps1", ROOT / "restart-dev.ps1", ROOT / "restart-prod.ps1"]
         for path in files:
