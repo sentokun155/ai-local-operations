@@ -102,6 +102,47 @@ If current `C:\Dev\local-mcp` contains secrets/runtime state, exclude them durin
 - Duplicate / uncertain dispatch must not create a second Task under the same identity.
 - Candidate revisions are validated through the Development runtime before Production promotion.
 
+
+## Personal-tool proportionality rule
+
+This repository is a **personal local tool**, not a customer-facing production service. Design and review must use that risk profile.
+
+Do not add or preserve operational complexity only because it would be conventional for a customer-facing production system. A guard, state, promotion gate, repository constraint, or verification step needs a concrete benefit for this repository.
+
+Strong safeguards are justified when they directly prevent at least one of these concrete risks:
+
+- secret / credential exposure
+- destructive loss of local work or data
+- dispatch to the wrong repository / branch / Task identity
+- duplicate or uncertain dispatch that can create duplicate work
+- concurrent use of the same Worker Slot
+- Dev / Prod Tunnel or process collision that causes the wrong local service to be used
+- explicit authority escalation beyond the requested local operation
+
+The following are **not sufficient reasons by themselves** for added machinery:
+
+- conventional production-deployment practice
+- immutable-runtime or clean-checkout purity
+- exact local/remote revision equality when no concrete safety property depends on it
+- customer-facing availability / release-management assumptions that do not apply to this personal tool
+- extra evidence, gates, states, or recovery paths added only for theoretical completeness
+
+Prefer observation and diagnostics over blocking when blocking does not prevent a concrete risk. In particular, Development runtime dirtiness or branch choice must not be treated as an error merely to emulate production deployment discipline.
+
+### Avoid churn; fix comprehensively on the next relevant change
+
+Do **not** immediately rewrite already-working code solely because an existing mechanism is now judged over-engineered. Rework plus repeated verification has a cost.
+
+When the affected area next requires a real modification, the same bounded change must:
+
+1. reassess the existing mechanism against this proportionality rule;
+2. remove or relax unnecessary production-style constraints in that area rather than layering another exception on top;
+3. keep only safeguards with an explicit concrete risk they mitigate;
+4. update source, documentation, and tests together so obsolete behavior is not left as an accidental contract;
+5. verify the resulting behavior once at the actual supported runtime boundary.
+
+Do not perpetuate an unnecessary mechanism merely because it already exists. Do not create a separate cleanup task unless the mechanism itself is causing current harm or the Human explicitly requests one.
+
 ## Supported shell / environment verification
 
 Repository-backed operational scripts are supported on **PowerShell 7+ (`pwsh.exe`)**.
