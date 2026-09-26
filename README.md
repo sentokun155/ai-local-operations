@@ -1,199 +1,133 @@
 # ai-local-operations
 
-Personal Local Operations / Local MCP implementation repository.
+Personal Local Operations / Local MCP implementation repository. This repository owns the local host implementation for the personal Local Operations Plugin. GWI lifecycle, Human Decision policy, auto-dispatch policy, and host-independent workflow authority remain with their respective repositories.
 
-このRepositoryは、ChatGPTからSecure MCP Tunnel経由で利用する個人用Local Operations Pluginの**local host implementation**を所有します。
+## Canonical source and runtime checkouts
 
-## Canonical scope
+`sentokun155/ai-local-operations` is the canonical source. `C:\Dev\DevEnv` is the Development runtime checkout for candidate verification. `C:\Dev\ProdEnv` is the Production runtime checkout and runs accepted `main` only. A Worker Slot's `ai-local-operations` clone is an implementation workspace; the MCP runtime never starts from a Worker Slot.
 
-- Local MCP server implementation
-- bounded MCP tools
-- Codex app-server integration
-- Codex task dispatch
-- DispatchReceipt / duplicate ledger semantics
-- Local Worker Pool
-- managed repository clone routing
-- repository / branch / dirty-state preflight
-- worker lease / release / quarantine
-- local operational diagnostics and tests
+Promotion flow: implement and commit in a Worker checkout, non-force push, fast-forward DevEnv to the candidate branch, verify through Development, then after acceptance/merge fast-forward ProdEnv to `main`. The scripts require clean checkouts and fast-forward updates. Production scripts refuse a non-`main` branch. T001 does not promote its candidate to Production.
 
-Global GWI lifecycle、Human Decision、auto-dispatch policy、repository ownership routingそのものは `sentokun155/ai-dev-control` が所有します。
+## Local prototype audit and migration
 
-Host-independentな共有AI開発workflow / skillは `sentokun155/ai-operations-skills` が所有します。
+The pre-repository prototype at `C:\Dev\local-mcp` contained `server.py`, `src/local_mcp/dispatch.py`, `tests/test_dispatch.py`, `tests/test_live_app_server.py`, `pyproject.toml`, `.python-version`, `uv.lock`, and its operational README. The MCP `ping` / `ping2` tools, app-server adapter, model and reasoning validation, `workspace-write` dispatch, DispatchReceipt, retry ledger, uncertainty guard, and committed Task Request blob validation were retained and extended here.
 
-## Current work
+The prototype's `.venv`, Python cache, and machine-local runtime data are not source. No API key, tunnel credential, Codex credential, `.env`, dispatch SQLite database, Worker clone, log, cache, or temporary Evidence is committed. The old `C:\Dev\local-mcp` tree is migration input only.
 
-GWI-0010 — Chat→Codex MCP Dispatch / Local Worker Pool
+## Development and Production Tunnel profiles
 
-Tracking Issue:
-https://github.com/sentokun155/ai-dev-control/issues/16
+| Environment | Plugin | Profile | Runtime checkout | Health/UI port |
+|---|---|---|---|---:|
+| Development | `Local Operations Dev` | `local-operations-dev` | `C:\Dev\DevEnv` | 8081 |
+| Production | `Local Operations` | `local-operations` | `C:\Dev\ProdEnv` | 8080 |
 
-Current implementation branch:
+Each profile must have a different Tunnel ID. Profile YAML references `env:CONTROL_PLANE_API_KEY`; it never stores the key value. Set the restricted Runtime key in the Windows **User** environment as `CONTROL_PLANE_API_KEY`. `scripts/setup.ps1` checks for it without displaying the value. The same restricted key may be used by both profiles.
 
-`gwi-0010-ai-local-operations`
+Run from `C:\Dev\DevEnv`:
 
-Current entry:
-
-`work/gwi-0010/ENTRY.md`
-
-Current implementation Task Request:
-
-`work/gwi-0010/GWI-0010-T001_TASK_REQUEST.md`
-
-## Source of truth and runtime layout
-
-Canonical source:
-
-`sentokun155/ai-local-operations`
-
-Development runtime checkout:
-
-`C:\Dev\DevEnv`
-
-Production runtime checkout:
-
-`C:\Dev\ProdEnv`
-
-Worker Slot内の `ai-local-operations` cloneは**実装作業用**であり、Local MCP runtimeとして直接起動しません。
-
-役割:
-
-- Worker checkout: implementation / commit / push
-- `C:\Dev\DevEnv`: candidate revisionのDevelopment MCP実行・検証
-- `C:\Dev\ProdEnv`: accepted / main revisionのProduction MCP実行
-
-通常のpromotion:
-
-```text
-Worker implementation
-→ commit / non-force push
-→ DevEnvをcandidate revisionへ安全に同期
-→ Development MCP再起動
-→ Local Operations Devで検証
-→ acceptance / merge
-→ ProdEnvをaccepted mainへ安全に同期
-→ Production MCP再起動
+```powershell
+./scripts/setup.ps1
+./scripts/start-all.ps1
 ```
 
-## Development / Production tunnel boundary
+Setup validates runtime checkouts and local tools; it does not start either Tunnel. To create profiles, provide the distinct Tunnel IDs explicitly:
 
-Development:
+```powershell
+./scripts/setup.ps1 -ConfigureProfiles -DevTunnelId <dev-id> -ProdTunnelId <prod-id>
+```
 
-- Plugin: `Local Operations Dev`
-- tunnel-client profile: `local-operations-dev`
-- runtime checkout: `C:\Dev\DevEnv`
-- Tunnel ID: Productionとは別ID
+Replacing an existing profile requires the separate `-ReplaceExistingProfiles` switch. Setup writes only Tunnel profile configuration and the environment-variable reference; it never writes the API key value. Verify profiles with `tunnel-client doctor --profile local-operations-dev --explain` and `tunnel-client doctor --profile local-operations --explain`.
 
-Production:
+The current Production checkout is intentionally left on accepted `main` while this candidate remains unmerged. If `main` does not yet contain `server.py` and the Python project, Production startup will HOLD until an accepted runtime is available.
 
-- Plugin: `Local Operations`
-- tunnel-client profile: `local-operations`
-- runtime checkout: `C:\Dev\ProdEnv`
-- Tunnel ID: Developmentとは別ID
+`start-all.ps1` starts each environment independently, skips an already-running profile, and checks `/readyz`. A failure in one does not stop the other. `restart-dev.ps1` operates only on DevEnv and the Development profile. `restart-prod.ps1` operates only on ProdEnv and Production `main`. Restarts stop when a Worker lease is active. The scripts never use `reset --hard`, `clean`, force push, or branch deletion.
 
-同一Tunnel IDをDevelopment / Productionで共有しません。
+Finish and release tasks before restarting. Legacy explicit-path tasks are not represented in the Worker Pool lease table and must also be checked in Codex. A Tunnel restart can stop its child MCP/app-server process.
 
-## API key
+After changing MCP tool schemas: restart the corresponding Tunnel; in ChatGPT Web open its Plugin and choose **Manage → Update tools**; confirm the tool list and use a new chat if it remains stale.
 
-Runtime keyはRepositoryへ保存しません。
+## Worker Pool V0
 
-標準運用ではWindows User環境変数:
+Copy and edit [`config/worker-pool.example.json`](config/worker-pool.example.json), for example to `%LOCALAPPDATA%\LocalOperations\worker-pool.json`, then set these local environment variables:
 
-`CONTROL_PLANE_API_KEY`
+```text
+LOCAL_OPERATIONS_WORKER_POOL_CONFIG=<path to worker-pool.json>
+LOCAL_OPERATIONS_WORKER_ROOT=<local directory for Worker Slots>
+```
 
-を利用します。
+Machine-specific paths are not stored in the repository config. `workerCount` is bounded from 1 to 16. Managed repositories are bounded to 32 entries; each entry supplies `identity` (`owner/name`), `cloneUrl`, and `defaultBranch`. URLs with embedded credentials are rejected. The example lists the repositories owned or used in this workflow; edit it to match the managed set and verified default branches.
 
-Development / Productionは同じRestricted Runtime keyを共有してよいものとし、各Tunnelに必要なRead + Use権限を持たせます。将来必要になればDev / Prod別keyへ分離可能です。
+Worker layout is `<worker-root>/worker-01/<repository-directory>`. Every configured repository has an independent clone in every slot. Unique repository basenames are used; collisions use `owner--name`. Normal dispatch never creates clones. Bootstrap only fills absent paths; an existing wrong or dirty path is preserved and quarantined.
 
-起動・再起動scriptはAPI keyを引数として受け取りません。環境変数が存在しない場合はsecret valueを表示せず安全に停止します。
+Bootstrap and status are local admin commands, not MCP shell tools:
 
-## Runtime data is not source
+```powershell
+uv --directory C:\Dev\DevEnv run --locked python -m local_mcp.admin bootstrap
+uv --directory C:\Dev\DevEnv run --locked python -m local_mcp.admin status
+```
 
-次はGit管理しません。
+The local SQLite file `%LOCALAPPDATA%\LocalOperations\dispatch-ledger.sqlite3` stores dispatch deduplication and Worker lease state; Git ignores it. SQLite `BEGIN IMMEDIATE` makes slot selection atomic across server processes. A lease is recorded before repository preparation. The dispatch ledger and Worker state use separate table updates in the same database; failures preserve duplicate safety and quarantine uncertain repository state.
 
-- OpenAI / Tunnel / GitHub等のcredential
-- environment secret
-- `.env`
-- runtime SQLite ledger
-- Worker Slot runtime state
-- managed repository clones
-- Codex credentials / home
-- logs / temporary Evidence
-- virtual environment / cache
+States are `FREE`, `LEASED`, `DIRTY`, and `QUARANTINED`. Only `FREE` slots can be leased. Before dispatch, Local Operations checks every managed clone's identity and clean state, fetches the requested repository, and checks out or fast-forwards only the requested remote branch. Divergence, wrong remote, unknown branch, tracked changes, or untracked files cause HOLD/quarantine without deleting data. The app-server `cwd` is the selected target repository root, never the Worker root or a sibling repository.
 
-具体的なignore policyは `.gitignore` を参照してください。
+Release requires the exact Worker/Task lease, explicit completion confirmation, and an app-server `thread/read` result proving the acknowledged turn completed or the rejected thread has no active turn. It checks all managed repositories, verifies the requested branch is reflected on its remote, and fast-forwards the target to its configured default branch. A local-only commit, dirty state, remote mismatch, or changed sibling repository quarantines the slot. Uncertain dispatch outcomes remain leased. Release never resets, cleans, deletes branches, or force-pushes.
 
-## Operational scripts
+## MCP tools and dispatch contract
 
-T001で次をRepository-backedにします。
+Bounded tools:
 
-- `scripts/setup.ps1`
-- `scripts/start-all.ps1`
-- `scripts/restart-dev.ps1`
-- `scripts/restart-prod.ps1`
+- `ping` → `LOCAL_MCP_OK`
+- `ping2` → `LOCAL_MCP_OK2`
+- `dispatch_codex_task`
+- `get_worker_pool_status`
+- `release_codex_worker`
 
-責務:
+Before migration, logical dispatch used a registered checkout or needed a local path. The normal fixed-pool route now takes only:
 
-### setup.ps1
+```text
+work_identity
+task_key
+task_name
+repository                 # logical owner/name
+branch
+task_request_locator       # repository-relative
+model?
+reasoning_effort?
+```
 
-- Dev / Prod runtime checkoutと必要dependency / profile前提を検証
-- `CONTROL_PLANE_API_KEY` の存在を検証
-- keyの値を表示・保存しない
-- 初期設定不足を明確な診断で停止
+`repository_path` and absolute-path inputs remain local diagnostic overrides. Chat does not need them. There is no generic `run_shell` tool.
 
-### start-all.ps1
+Dispatch validates repository identity, branch, tracked and committed Task Request blob, repository commit, model, and reasoning effort. The manifest pins these identities. Codex receives `workspace-write`; dispatch grants no merge, force-push, publication, deployment, or destructive-cleanup authority. Thread names remain `Task Key + Task Name`.
 
-- PC起動時等にDevelopment / Productionの両Tunnelを起動
-- 二重起動を避ける
-- 起動後に各環境のhealth / admin UI確認先を表示
+`DISPATCHED` means the app-server acknowledged `turn/start`, not that the task completed. The receipt includes Worker ID, selected repository root for diagnosis, thread/turn IDs, and pinned commit/blob. Repeating `work_identity + task_key` returns the accepted receipt without another turn. Uncertain outcomes block a second task. Explicit turn rejection can retry on its existing thread and keeps the Worker leased. A clean pre-dispatch HOLD releases the lease only after safe baseline restoration.
 
-### restart-dev.ps1
+`get_worker_pool_status` reports configured slot state without clone contents or credentials. `release_codex_worker` requires `worker_id`, `work_identity`, `task_key`, and `confirm_completed=true`; the server verifies turn completion and repository/remote cleanliness before making the slot FREE.
 
-- `C:\Dev\DevEnv` をDevelopment runtimeとして使用
-- `local-operations-dev` profileを再起動
-- candidate branch / revisionを検証可能
-- Production process / checkoutを変更しない
+## Verification
 
-### restart-prod.ps1
+Run the bounded unit/integration suite:
 
-- `C:\Dev\ProdEnv` をProduction runtimeとして使用
-- `local-operations` profileを再起動
-- accepted / main revision以外を暗黙利用しない
-- Development process / checkoutを変更しない
+```powershell
+uv run --locked python -m unittest discover -s tests -v
+```
 
-Source code / Tool Catalog変更後は対象Tunnelを再起動し、ChatGPT WebのPlugin管理から「ツールの更新」を実行します。
+The live Development E2E uses a temporary bare fixture repository, dispatches a read-only synthetic Task Request to the installed Codex app-server, waits for completion, confirms the Worker stayed clean, and calls the safe release tool. It does not use a GWI-0006/GWI-0009 task:
 
-## Worker Pool direction
+```powershell
+$env:LOCAL_MCP_RUN_LIVE_APP_SERVER_TESTS = "1"
+uv run --locked python -m unittest discover -s tests -p test_live_app_server.py -v
+```
 
-V0では固定数のWorker Slotを利用します。
+The probe uses a disposable clone below the OS temporary directory and removes it when the test exits.
 
-各Slotにはmanaged Repository群の独立cloneを配置します。
+## Troubleshooting
 
-Task dispatch時にはFREE Slotをleaseし、対象Repository cloneだけをCodex cwdとして利用します。
+- `WORKER_POOL_NOT_CONFIGURED`: set the two local Worker Pool variables and use the documented JSON format.
+- `WORKER_REPOSITORY_UNAVAILABLE`: run bounded bootstrap and check the configured clone URL/identity.
+- `WORKER_REPOSITORY_DIRTY` / `WORKER_BRANCH_DIVERGED`: inspect and preserve local state; do not reset or clean.
+- `NO_FREE_WORKER`: inspect `get_worker_pool_status`; release completed work or resolve quarantined slots deliberately.
+- `DISPATCH_OUTCOME_UNKNOWN`: inspect the saved Codex thread; never retry the same key as a new task.
+- `CODEX_UNAVAILABLE`: Codex CLI/app-server must be available to the runtime account.
+- Tunnel profile mismatch: run `tunnel-client doctor --profile <profile> --explain`; confirm its MCP command uses its DevEnv/ProdEnv path and the Tunnel IDs differ.
 
-Task完了時はRepository-backed成果とlocal cleanlinessを確認し、安全な場合だけdefault branch等のclean baselineへ戻してSlotをFREE化します。
-
-未保存差分や不整合があれば自動破棄せず `DIRTY` / `QUARANTINED` とします。
-
-Git worktreeはV0の必須実装ではありません。Worker Slot abstractionを維持し、必要性が確認された場合に内部実装を変更します。
-
-Codex Desktop Project登録はWorker routingのAuthorityにしません。Local Operationsが選択した対象Repository rootをCodex app-serverのcwdとして明示します。
-
-## Security boundary
-
-このPluginはgeneric local shellを公開するためのものではありません。
-
-- Toolは用途限定
-- server-side validationを必須
-- Repository-backed Task RequestをCanonicalとして扱う
-- MCP Toolの存在から追加Authorityを推論しない
-- force-push / merge / publication / deployment / destructive cleanupを暗黙許可しない
-- secretをTool responseへ返さない
-
-## Historical prototype
-
-GWI-0010開始前のprototypeは `C:\Dev\local-mcp` に存在します。
-
-これはmigration inputであり、このRepositoryへ反映されたrevisionより上位のCanonical Authorityではありません。
-
-T001でsecret / credential / runtime stateを除く必要な実装を本Repositoryへ移行し、その後のruntimeはDevEnv / ProdEnvへ分離します。
+Tunnel runtime data, local config, managed clones, Codex credentials, and task output are host-local state and are never committed.

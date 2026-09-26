@@ -1,0 +1,17 @@
+[project]
+name = "local-mcp"
+version = "0.1.0"
+description = "Personal Local Operations MCP and fixed local Worker Pool"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "mcp[cli]>=2.2.0",
+]
+
+[project.scripts]
+local-mcp = "local_mcp:main"
+local-operations-admin = "local_mcp.admin:main"
+
+[build-system]
+requires = ["uv_build>=0.12.16,<0.13.0"]
+build-backend = "uv_build"

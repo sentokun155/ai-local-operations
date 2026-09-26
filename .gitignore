@@ -24,6 +24,8 @@ temp/
 runtime/
 worker-state/
 dispatch-ledger.sqlite3
+worker-pool.local.json
+worker-root/
 
 # Local worker repositories
 workers/
