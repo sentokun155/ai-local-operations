@@ -3,6 +3,7 @@ from local_mcp.dispatch import dispatch_task
 from local_mcp.finalize import finalize_task, recover_worker
 from local_mcp.production import prepare_runtime
 from local_mcp.unity_probe import probe_unity_host_connectivity as _probe_unity_host_connectivity
+from local_mcp.unity_project_open import open_leased_unity_project as _open_leased_unity_project
 from local_mcp.worker_pool import WorkerPool, WorkerPoolConfig, WorkerPoolError, default_state_path
 
 mcp = MCPServer("local-operations")
@@ -114,6 +115,19 @@ def prepare_production_runtime(branch: str) -> dict[str, object]:
 def probe_unity_host_connectivity() -> dict[str, object]:
     """Read-only probe for the Unity Editor visible to the Local Operations Host process."""
     return _probe_unity_host_connectivity()
+
+
+@mcp.tool()
+def open_leased_unity_project(worker_id: str, work_identity: str, task_key: str) -> dict[str, object]:
+    """Open the Unity project resolved from one exact active Worker lease.
+
+    Inputs identify the lease only. The Host resolves the managed repository
+    path and project-declared Editor version, uses an installed Unity CLI
+    version, and returns bounded identity/readiness fields. No arbitrary path
+    or CLI arguments are accepted, and descriptor/token or raw CLI data is
+    never returned.
+    """
+    return _open_leased_unity_project(worker_id, work_identity, task_key)
 
 
 if __name__ == "__main__":

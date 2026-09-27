@@ -114,6 +114,25 @@ class WorkerPoolTests(unittest.TestCase):
             self.lease(task="GWI-0010-T-third")
         self.assertEqual(context.exception.reason, "NO_FREE_WORKER")
 
+    def test_get_lease_requires_exact_active_worker_and_task_identity(self):
+        lease = self.lease()
+
+        self.assertEqual(
+            self.pool.get_lease("worker-01", "GWI-0010-FIXTURE", "GWI-0010-T-fixture")["worker_id"],
+            lease["worker_id"],
+        )
+        self.assertIsNone(self.pool.get_lease("worker-02", "GWI-0010-FIXTURE", "GWI-0010-T-fixture"))
+        self.assertIsNone(self.pool.get_lease("worker-01", "GWI-0010-OTHER", "GWI-0010-T-fixture"))
+        self.assertIsNone(self.pool.get_lease("worker-01", "GWI-0010-FIXTURE", "GWI-0010-T-other"))
+
+        connection = sqlite3.connect(self.state)
+        try:
+            connection.execute("UPDATE workers SET state='FREE' WHERE worker_id='worker-01'")
+            connection.commit()
+        finally:
+            connection.close()
+        self.assertIsNone(self.pool.get_lease("worker-01", "GWI-0010-FIXTURE", "GWI-0010-T-fixture"))
+
     def test_dirty_untracked_state_is_preserved_and_quarantined(self):
         path = self.config.repository_path("worker-01", self.repo)
         marker = path / "unexpected-local-file.txt"

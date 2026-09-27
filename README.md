@@ -148,6 +148,8 @@ Bounded tools:
 - `finalize_codex_task`
 - `recover_quarantined_worker`
 - `prepare_production_runtime`
+- `probe_unity_host_connectivity`
+- `open_leased_unity_project`
 
 Before migration, logical dispatch used a registered checkout or needed a local path. The normal fixed-pool route now takes only:
 
@@ -169,6 +171,8 @@ Dispatch validates the configured repository identity, requested branch, current
 `DISPATCHED` means the app-server acknowledged `turn/start`, not that the task completed. The receipt includes Worker ID, selected repository root for diagnosis, thread/turn IDs, and informational commit/blob values. Repeating `work_identity + task_key` returns the accepted receipt without another turn. Uncertain outcomes block a second task. Explicit turn rejection can retry on its existing thread and keeps the Worker leased.
 
 `get_worker_pool_status` reports configured slot state without clone contents or credentials. After Codex completes, `finalize_codex_task` returns the final agent message, changed paths, commit SHA when present, and push status, then frees a clean Worker. `recover_quarantined_worker` returns a quarantined Worker to `FREE` after confirming a clean clone or successfully saving and pushing its completed task. `prepare_production_runtime` returns `READY` only after Production `/readyz` responds successfully. These tools do not send an automatic callback to an existing ChatGPT chat.
+
+`open_leased_unity_project(worker_id, work_identity, task_key)` accepts lease identity only. The Host resolves the managed clone from the active Worker Pool lease, requires Unity project metadata in that clone, reads `ProjectSettings/ProjectVersion.txt`, and checks that the exact declared Editor version is installed before opening. It uses the supported Unity CLI `open` route and filters `status` by the resolved project path, then confirms one ready Editor with the declared version. It does not accept a project path or extra CLI arguments, install or upgrade an Editor, close another project, or return raw CLI output, Pipeline descriptors, or bearer tokens. Unity may create ignored runtime files such as `Library`, `Temp`, and `Logs` while opening; the tool does not clean them up.
 
 Set `LOCAL_OPERATIONS_CODEX_EXECUTABLE` to the Codex executable path when it is not on `PATH`. If unset, Local Operations uses `shutil.which("codex")`.
 
