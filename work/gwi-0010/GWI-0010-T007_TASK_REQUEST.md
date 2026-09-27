@@ -1,5 +1,10 @@
 # GWI-0010-T007 Task Request
 
+Status: **CANCELLED / SUPERSEDED — do not implement**
+
+This task was cancelled by Human direction. Native Codex tasks that already have Git capability must complete their own Task-owned commit / normal push / remote reflection in the Task Request. A separate reflection tool is not required. Any in-progress T007 implementation output is non-current and must not be integrated.
+
+
 Task Key: `GWI-0010-T007`
 Task Name: `Native Codex Result Reflection V0`
 Stage: `implementation / integration`
