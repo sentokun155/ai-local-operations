@@ -141,7 +141,7 @@ def _ensure_checkout(root: Path, branch: str, *, runner: Callable[..., Any]) -> 
         if has_local:
             _git(root, "switch", branch, runner=runner)
         else:
-            _git(root, "switch", "--track", "-c", branch, f"origin/{branch}", runner=runner)
+            _git(root, "switch", "--no-track", "-c", branch, f"origin/{branch}", runner=runner)
             return "BRANCH_SWITCHED"
         action = "BRANCH_SWITCHED"
 

@@ -124,6 +124,7 @@ class ProductionRuntimeTests(unittest.TestCase):
 
     def test_main_single_branch_clone_can_fetch_and_switch_to_requested_branch(self) -> None:
         self.create_production_clone("main")
+        git(self.production, "config", "--replace-all", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main")
 
         result = self.prepare()
         self.assertEqual(result["status"], "READY", result)
