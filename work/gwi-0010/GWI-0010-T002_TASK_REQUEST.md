@@ -2,8 +2,7 @@
 
 Task Key: `GWI-0010-T002`  
 Task Name: `Codex Result Persistence and Intake V0`  
-Stage: `implementation / integration`  
-Role: `Local Operations lifecycle completion`
+Stage: `implementation / integration`
 
 Repository: `sentokun155/ai-local-operations`  
 Branch: `gwi-0010-ai-local-operations`  
@@ -12,536 +11,334 @@ Draft PR: https://github.com/sentokun155/ai-local-operations/pull/1
 
 ## 1. Goal
 
-T001で成立した Fixed Local Worker Pool / logical repository routing / Codex app-server dispatch に、Codex完了後の **Repository Persistence / Result Intake** を追加する。
+T001で成立した Fixed Local Worker Pool / logical repository routing / Codex app-server dispatch に、Codex完了後の **Git persistence / Result Intake** を追加する。
 
-正常系を次の責務分離へ変更する。
+正常系は次の単純な流れとする。
 
 ```text
 Chat
-→ Local Operations: PREPARE
-→ Codex: EXECUTE
-→ Local Operations: PERSIST
-→ Local Operations / Chat: INTAKE
-→ Local Operations: RELEASE
+→ Local Operations: Worker確保・指定branchを最新化
+→ Codex: worktree編集・test・Result
+→ Local Operations: commit・non-force push
+→ Local Operations: Codex最終応答とcommit情報をChatへ返す
+→ Worker FREE
 ```
 
-Codexはleased Worker内の対象Repository worktreeを編集する。Codex自身に `.git` 更新、commit、push、ChatGPT通常chatへの直接送信を要求しない。
+Codexには `.git` 更新、commit、push、ChatGPT通常chatへの直接送信を要求しない。
 
-Local OperationsがCodex完了後の変更を検証し、boundedなGit操作でcommit / non-force push / remote readbackを行い、Chatが取得可能なResultを返した後、安全にWorkerを再利用可能にする。
+Local Operationsはpersonal local toolである。customer-facing production serviceのようなrelease gate、revision pin、promotion discipline、過剰なEvidence、細粒度state machineを追加しない。
 
-## 2. Authority / current knowledge
+## 2. Current facts to preserve
 
-実装前に必ず以下を読む。
+実装前に root `AGENTS.md`, current source/tests, `work/gwi-0010/VALIDATION_KNOWLEDGE.md` と本Task Requestを読む。
 
-- root `AGENTS.md`
-- root `README.md`
-- `work/gwi-0010/ENTRY.md`
-- `work/gwi-0010/VALIDATION_KNOWLEDGE.md`
-- `work/gwi-0010/GWI-0010-T001_TASK_REQUEST.md`
-- Tracking Issue #16
-- current Draft PR #1
-- current source/tests
+確認済み:
+
+- Local Operationsから起動したworkはCodex Taskとして表示される。
+- observed Codex TaskにはChatGPT chat一覧取得 / chat送信専用Toolがない。
+- Codex subagentは利用可能。
+  - `spawn_agent`: present
+  - `wait_agent`: present
+  - `send_message`: present
+  - PROBE-004 child result: `GWI-0010-PROBE-004 SUBAGENT_OK`
+- Codexは `workspace-write` でworktree fileを編集できる。
+- observed Windows environmentではCodex自身の `git add` が `.git/index.lock` 作成拒否で失敗した。
+- dirty worktreeを現行releaseへ渡すとlocal成果を削除せずQUARANTINEDになる。
 
 T001 historical Task Requestは変更しない。
 
-root `AGENTS.md` の **Personal-tool proportionality rule** を本Taskにも適用する。理論上の完全性だけを理由に状態・gate・Evidenceを増やさない。
+## 3. Runtime
 
-## 3. Human-confirmed runtime
+Current personal runtime:
 
-- Development runtime: `C:\Dev\DevEnv`
-- Production runtime: `C:\Dev\ProdEnv`
+- Development: `C:\Dev\DevEnv`
+- Production: `C:\Dev\ProdEnv`
 - Worker root: `C:\Dev\WorkerRoot`
 - Worker count: `5`
 - Worker config: `%LOCALAPPDATA%\LocalOperations\worker-pool.json`
 - Supported operational shell: PowerShell 7+ / `pwsh.exe`
-- Development Plugin: `Local Operations Dev`
-- Development profile: `local-operations-dev`
 
-Productionへcandidateを導入しない。
+Dev / Prodを分ける目的はPlugin/process collisionを避けること。Production向けの厳格なpromotion gateやimmutable checkout disciplineは本Taskの要件にしない。
 
-## 4. Confirmed findings that supersede earlier assumptions
+T002の動作確認はDevelopment Pluginで行えばよい。Production更新はT002の完了条件ではない。
 
-### 4.1 app-server Task is a Codex Task, not a ChatGPT chat
+## 4. Remove over-strict identity gating
 
-Local Operationsから `thread/start` / `turn/start` したTaskはCodex側のTask一覧に表示された。
+通常のDevelopment taskで次を要求しない。
 
-Codex Desktopで開くと「別のアプリで開いています」と表示される場合があり、Local Operations app-serverが外部clientとしてthreadを保持していることと整合する。
+- expected starting HEADの固定
+- expected Task Request blob IDの事前指定
+- branch HEAD完全一致を開始条件にすること
+- local/remote revision equalityを独立したacceptance gateにすること
+- Task開始前の冗長なreadback
 
-このTaskをChatGPT通常chatと同一surfaceとして扱わない。
+Task Requestはcurrent requested branch上のcurrent fileを読む。
 
-### 4.2 Direct Codex → ChatGPT chat return is unavailable
+Local Operationsが防ぐべきなのは、実害のある誤配送だけ:
 
-PROBE-001 / PROBE-003で、app-server Task contextから利用可能なTool catalogを確認した。
+- configured logical repositoryと対象cloneが明らかに異なる
+- requested branchを取得/checkoutできない
+- Workerが別Taskに利用中
+- 前Taskの未保存local changesが残っている
 
-確認結果:
-- ChatGPT chat一覧取得 capability: absent
-- ChatGPT chat message送信 capability: absent
-- generic UI automationは専用chat return routeとして採用しない
+それ以外のrevision差は、通常のfetch/updateで解消する。
 
-よってCodex自身に「呼出元Chatへ送信」を要求する設計を正常系にしない。
+## 5. PREPARE — Local Operations
 
-### 4.3 Codex subagents are available
-
-PROBE-004で実測確認:
-
-```text
-VERDICT: PASS
-SPAWN_AGENT: present
-WAIT_AGENT: present
-MESSAGE_TOOL: send_message
-CLOSE_AGENT: absent
-CHILD_STARTED: yes
-CHILD_RESULT: GWI-0010-PROBE-004 SUBAGENT_OK
-```
-
-Root Codex Taskは必要に応じてsubagentを使用可能。
-
-本Taskではsubagent数やorchestration policyを新設しない。既存Codex capabilityとして利用を妨げないことだけを維持する。
-
-### 4.4 workspace-write edits files but does not provide the required Git persistence route
-
-PROBE-003ではResultファイル自体はworktreeへ作成できたが、`git add` が `.git/index.lock` の作成拒否で失敗した。
-
-またdispatch manifestのauthority boundaryによりpushも実施されなかった。
-
-したがって正常系を以下にしない:
-
-```text
-Codex
-→ edit
-→ git add
-→ commit
-→ push
-```
-
-採用する責務分離:
-
-```text
-Codex
-→ edit / test / Result
-→ completed
-
-Local Operations
-→ validate
-→ commit
-→ non-force push
-→ remote readback
-```
-
-### 4.5 Current release behavior exposes the missing phase
-
-CodexがResultやsource変更をworktreeに残した状態で現行 `release_codex_worker` を実行すると、Local Operationsはデータを破棄せずWorkerをQUARANTINEDにする。
-
-これは安全側の既存behaviorとして維持する。
-
-Current observed recovery input:
-- worker-01: PROBE-002由来でQUARANTINED
-- worker-02: PROBE-003由来でQUARANTINED
-- worker-03以降: safe release経路を確認済み
-
-T002では既存local-only成果を勝手に削除しない。
-
-## 5. Lifecycle V0
-
-### 5.1 PREPARE — Local Operations
-
-既存T001のWorker allocation / repository preflightを監査して再利用する。
+FREE Workerを1つ確保し、対象Repositoryを次のTaskで使える状態にする。
 
 正常系:
 
-1. FREE Workerをatomicにlease。
-2. logical repositoryから対象cloneを解決。
-3. expected remote identityを確認。
-4. `git fetch origin`。
-5. exact requested branchをcheckout。
-6. remote branchとlocal branchを確認。
-7. safeな場合だけfast-forward。
-8. divergence / local-only commit / unexpected dirtinessならHOLDまたはQUARANTINED。
-9. Task Requestのtracked / committed blobを照合。
-10. dispatch baseline commitを保存。
-11. 対象Repository rootをCodex cwdとしてdispatch。
+1. logical repositoryからWorker内の対象cloneを解決。
+2. `git fetch origin`。
+3. requested branchへcheckout。
+4. remote branchが存在し、clean local branchをfast-forwardできるなら最新化。
+5. 対象Repository rootをCodex cwdとしてdispatch。
 
-単純な `git pull` にmerge/rebaseの暗黙挙動を持たせない。
+Task Requestはrequested branch上のcurrent Repository-backed fileを読む。
 
-既存実装がこの要件を既に満たす部分は再実装しない。
+開始を止めるのは、主に次の場合だけ:
+
+- WorkerがFREEではない
+- target cloneが対象Repositoryではない
+- requested branchを取得できない
+- 前Taskの未保存変更が残っている
+- non-destructiveに通常同期できない
+
+WorkerはTask完了後にdefault branchへ戻す必要はない。FREE Workerがどのbranchにいるかは状態ではなく、次回PREPAREがrequested branchへ切り替える。
+
+既存T001実装に過剰なidentity / clean-baseline gateがあり、この領域をT002で触る場合は例外追加ではなく簡素化する。
 
 ## 6. EXECUTE — Codex
 
 Codexの責務:
 
 - Task Requestを読む
-- source / docs / tests / Repository-backed Result等、Taskで必要なworktreeファイルを変更
-- test / verificationを実行
+- 必要なsource / docs / tests / Resultを変更
+- test / verification
 - 必要ならsubagentを使用
 - final agent messageを返す
 - turnをcompletedにする
 
-Codexの正常責務に含めない:
+Codexの責務に含めない:
 
 - `git add`
 - `git commit`
 - `git push`
-- force push
-- merge
-- deployment / publication
 - ChatGPT通常chatへの直接送信
 
-Task Requestが古い前提でCodex自身へcommit/pushを要求している場合でも、Local Operations経由実行ではPersistence責務をLocal Operations側へ正規化できる設計にする。過去Task Requestを遡及変更しない。
+force push / merge / deployment等は本Taskとは無関係であり、追加権限を与えない。
 
 ## 7. PERSIST — Local Operations
 
-用途限定のbounded operationを追加する。
+Codex完了後、Local OperationsがworktreeをGitへ反映する。
 
-Candidate tool name:
+用途限定Toolを追加する。Candidate name:
 
 `finalize_codex_task`
 
-名称は実装上の一貫性が改善する場合のみ変更可。その場合READMEとTool schemaを同期する。
+不要にToolを分割しない。
 
-### 7.1 Required input
+### 7.1 Input
 
 最低限:
 
 - `worker_id`
 - `work_identity`
 - `task_key`
-- explicit confirmation that persistence is requested
 
-Chatがlocal absolute pathを指定する必要はない。
+local absolute pathやexpected commit/blobをChatへ要求しない。
 
-### 7.2 Pre-persistence gate
+### 7.2 Finalize flow
 
-Local Operations自身が最低限確認:
+1. 指定Workerが指定Taskを実行していたことを確認。
+2. app-serverでtarget turnがcompletedか確認。
+3. target Repositoryのworktree変更を取得。
+4. 変更が無ければcommitせずResult Intakeへ進む。
+5. 変更があれば、ignored filesを除き通常の `git add -A`。
+6. Task identityが分かるcommit messageでcommit。
+7. current requested branchへ通常のnon-force push。
+8. push成功後、commit SHAとCodex final messageをResultとして返す。
+9. worktreeがcleanならWorkerをFREEにする。
 
-- Workerが指定TaskへLEASED中
-- saved dispatch identity一致
-- acknowledged thread / turn一致
-- Codex turn statusが `completed`
-- exact target repository / branch一致
-- sibling managed Repositoryにunexpected変更なし
-- target worktreeの変更一覧を取得可能
-- dispatch後にremote branchが予期せず進んでいない
-- force / destructive recovery不要
+pushがrejectされた場合は成果を残してエラーを返す。force/rebase/resetで自動解決しない。
 
-remoteが進んだ / divergenceした場合は、勝手にforce / rebase / resetせずHOLDする。
+### 7.3 Minimal safeguards
 
-### 7.3 Change handling
+追加するguardは実害のあるものだけにする。
 
-Codexが作ったtarget Repositoryのworktree変更をRepository-backed成果としてpersistする。
+維持:
 
-- Git ignored runtime/cache/credential stateをstageしない。
-- `.git`自体を操作対象ファイルとして扱わない。
-- repositoryの既存secret/runtime deny boundaryを維持。
-- 明らかなcredential / runtime artifactを検出した場合はcommitせずHOLD。
-- sibling Repository変更は自動commitしない。
-- unexpected local-only dataを自動削除しない。
+- force pushしない
+- remote/upstreamを変更しない
+- credential / runtime secretを明示的にcommitしない
+- 他TaskのWorkerをfinalizeしない
+- push失敗時にlocal成果を削除しない
 
-Personal toolであるため、汎用的な巨大policy engineや細粒度path allowlist systemを新設しない。具体的riskを防ぐ最小のvalidationにする。
+不要:
 
-### 7.4 Commit
+- sibling Repository全件の完全不変チェック
+- remote advancementの事前/事後二重検証
+- commit後の全critical file readback
+-細粒度path allowlist policy engine
+- default branchへの復帰gate
+- Production promotion gate
+- 理論上の完全性だけの追加state
 
-Local Operations host processがtarget Repositoryでbounded Git persistenceを行う。
+## 8. RESULT INTAKE
 
-- exact current task branchのみ
-- normal commit
-- Task identityを説明可能なcommit message
-- amend不要
-- branch deletionなし
-- remote変更なし
+Local Operationsが `thread/read` を利用してCodexのtarget turnを読む。
 
-Codex subprocessへGit metadata write authorityを広げることで解決しない。
-
-### 7.5 Push
-
-- exact configured remote / exact requested branch
-- normal non-force pushのみ
-- force / force-with-lease禁止
-- push reject時はHOLD
-- unexpected remote advancement時はHOLD
-
-### 7.6 Remote readback
-
-push成功だけで完了にしない。
-
-最低限:
-
-- local HEAD
-- remote target branch HEAD
-- commit identity
-- Repository-backed ResultがTaskで生成された場合、その存在を確認可能
-
-正常系ではlocal persisted commitとremote branch HEADの一致を確認する。
-
-## 8. INTAKE — Local Operations / Chat
-
-CodexからChatGPT通常chatへの直接送信を要求しない。
-
-Local OperationsがCodex app-server `thread/read` を使用し、Chatが取得可能なbounded Resultを返す。
-
-Candidate:
-- `finalize_codex_task` のresponseへResult Intakeを統合
-- または責務が明確になるなら read-only `get_codex_task_result` を追加
-
-不要なTool分割はしない。
-
-最低限Chatへ返せる情報:
+`finalize_codex_task` responseに最低限:
 
 - status
-- work identity / task key
+- task key
 - worker id
-- thread id / turn id
 - Codex turn status
-- final agent message（利用可能な範囲）
+- final agent message
 - changed paths summary
-- persistence status
-- persisted commit SHA
-- remote HEAD
-- Repository-backed Result locator(s)を説明可能な場合そのlocator
-- HOLD reason / recovery hint
+- commit SHA（変更があった場合）
+- push status
+- error/recovery hint（失敗時）
 
-secret / credential / raw auth情報を返さない。
+を返す。
 
-### 8.1 No automatic Chat callback in T002
+Repository-backed Result fileがある場合、changed pathsからlocatorを返せるなら返す。
 
-Codex / Local Operationsから既存ChatGPT chatを自動再開するcallback routeは本Taskで作らない。
+Codexから既存ChatGPT chatを自動再開するcallbackはT002で作らない。Chatが `finalize_codex_task` を呼べば同じturnで結果を取得できればよい。
 
-T002の完了条件は:
+## 9. RELEASE
 
-```text
-Chat
-→ Local Operations tool call
-→ completed Codex Taskをfinalize / intake
-→ Resultを同じChat turnへ返せる
-```
+Finalize成功後、target worktreeがcleanならWorkerをFREEにする。
 
-まで。
+default branchへのcheckout、fetch、remote HEAD一致確認はrelease条件にしない。
 
-future eventでHuman操作なしにChat/Management Cycleを再開する責務はGWI-0009等のowner scopeと調整する。本Repositoryへauto-continuation policyを持ち込まない。
+read-only TaskはCodex turn completed + clean worktreeでそのままFREEにできる。
 
-## 9. RELEASE — Local Operations
+local changesが残っている場合だけFREEにしない。
 
-正常系:
+既存 `release_codex_worker` と finalize が重複するなら、personal toolとして分かりやすい方へ簡素化する。互換性のためだけに複雑な二重lifecycleを残さない。
 
-```text
-Codex completed
-→ persistence requested
-→ validation
-→ commit
-→ non-force push
-→ remote readback
-→ Result Intake available
-→ clean baseline restore
-→ FREE
-```
+## 10. Existing quarantined probes
 
-変更がないread-only TaskはPersistence commit不要でsafe release可能。
-
-変更があるのにPersistence未完了ならFREEへ戻さない。
-
-unsafe stateでは既存通りQUARANTINEDし、local-only dataを消さない。
-
-既存 `release_codex_worker` と新finalize operationの責務が重複する場合、例外を積み増さず構造を簡素化する。Personal-tool proportionality ruleに従い、最小の明瞭なlifecycleにする。
-
-## 10. Quarantined probe recovery
-
-T002実装後、Development runtimeで既存probe由来Workerを確認する。
-
-少なくとも:
+現在のprobe由来local state:
 
 - worker-01 / PROBE-002
 - worker-02 / PROBE-003
 
-既存local Result / worktree変更をinspectしてから扱う。
+T002実装前後で内容を確認し、診断Resultとして必要なら回収する。
 
-- 必要な診断Resultは回収する。
-- 不要と判断したprobe-only変更を破棄する場合も、何を破棄するかを明示してから行う。
-- `reset --hard` / `clean -fdx` を盲目的な回復手段として使わない。
-- recovery後、safeならFREEへ戻す。
+既知のprobe-only成果で不要なものは、Human intentが明確な範囲で除去してWorkerを再利用可能にしてよい。汎用 `clean -fdx` で無関係なデータまで消さない。
 
-このrecoveryはPersistence / quarantine recovery pathの実環境確認として利用してよい。
+この2 Workerの復旧を、新finalize/recovery設計の実地確認に利用してよい。
 
-## 11. Codex executable discovery follow-up
+## 11. Codex executable
 
-本Taskはdispatch / completion lifecycleを実修正するため、同じaffected areaにある既知のCodex discovery不足もproportionality ruleに従い再評価する。
+現在の実用上の問題として、Codex Desktop付属CLIは存在するが通常PATHには無かった。
 
-Confirmed:
-- Codex Desktop付属CLIは存在する
-- example observed version: `codex-cli 0.158.0-alpha.2.1`
-- `codex app-server --help` は成功
-- 通常PowerShell PATHには `codex` が無く、Local Operationsが `shutil.which("codex")` のみを使うと `CODEX_UNAVAILABLE` になった
-- Dev processへ一時PATHを継承するとdispatch成功
+最低限、Local Operationsが安定してCodex executableを指定できるようにする。
 
-Minimal acceptable remediation:
-- explicit configured executable overrideをサポートするか、
-- setup/runtime診断でCodex Desktop executableをstableに解決するか、
-- それと同等に「Dev runtimeが実際に使用するCodex executable」を説明可能にする
+推奨:
 
-versioned internal pathをRepositoryへ固定しない。
+`LOCAL_OPERATIONS_CODEX_EXECUTABLE`
 
-起動不能時は、PATH not found / process start failure / initialize failureを診断上区別できることが望ましい。ただし過剰なdiagnostic frameworkを作らない。
+が設定されていればそのpathを使用し、未設定なら従来通り `shutil.which("codex")` を使う。
+
+Codex Desktopのversioned internal pathをRepositoryへ固定しない。
+
+追加のdiscovery frameworkや複雑なready gateは不要。
 
 ## 12. Tests
 
-### 12.1 PREPARE regression
-
-- logical repository route維持
-- exact branch fetch / checkout / ff-only
-- wrong remote / divergence / dirty baselineで安全停止
-- Task Request blob identity維持
-- duplicate dispatch semantics維持
-
-### 12.2 Persistence unit/integration
+必要なtestsだけ追加/更新する。
 
 最低限:
 
-- completed Task + changed target worktree → commit可能
-- exact task branchへnon-force push
-- remote readback成功
-- remote advanced / divergence → HOLD、forceなし
-- sibling repository変更 → commitせずHOLD/QUARANTINE
-- forbidden runtime / credential artifact → commitせずHOLD
-- Git persistence失敗 → local成果を破棄せずHOLD/QUARANTINE
-- no-change Task → commit不要でrelease可能
+- FREE Worker → requested branchをfetch/checkout/update → dispatch
+- completed Codex Task + worktree changes → commit → non-force push
+- no-change Task → commitなしでResult取得 → FREE
+- push reject → local成果を保持して失敗
+- finalize responseにfinal agent message / commit SHAが含まれる
+- Worker FREE後、次Taskで別branchへ切替可能
+- `LOCAL_OPERATIONS_CODEX_EXECUTABLE` override
+-既存duplicate dispatch / Worker同時利用防止のregressionなし
 
-### 12.3 Result Intake
-
-- `thread/read includeTurns=true` からtarget turnを確認
-- final agent messageをbounded responseへ反映
-- persisted commit / remote HEADをresponseへ反映
-- unavailable itemを捏造しない
-- secretを返さない
-
-### 12.4 Release
-
-- successful persistence後にdefault baselineへ安全復帰
-- Worker FREE
-- persistence未完了のdirty WorkerをFREEにしない
-- unsafe stateの自動削除なし
-
-### 12.5 Codex discovery
-
-supported Dev runtimeから:
-- actual executable resolution
-- `--version`
-- app-server initialize
-
-を最低1回検証する。
+古い過剰gateのtestが本方針と衝突する場合は、obsolete contractとして更新/削除する。
 
 ## 13. Development E2E
 
-Productionを変更せず、`Local Operations Dev` で1件の専用fixture/probeを通す。
-
-Required flow:
+`Local Operations Dev` で小さいprobeを1件通す。
 
 ```text
-Chat-equivalent logical dispatch
-→ Worker lease
-→ fetch / exact branch sync
-→ Codex Task start
-→ Codex writes a harmless Repository-backed Result file
-→ turn completed
-→ Local Operations finalize
-→ commit
-→ non-force push to disposable/probe branch or fixture remote
-→ remote readback
-→ Result Intake response
-→ baseline restore
+Chat-equivalent dispatch
+→ Worker
+→ requested branch最新化
+→ Codexがharmless Result fileを作成
+→ Codex completed
+→ finalize_codex_task
+→ Local Operations commit
+→ non-force push
+→ final agent message / commit SHAをresponse
 → Worker FREE
 ```
 
-実GWI-0006 / GWI-0009 Taskをimplementation probeとして勝手に使用しない。
+fixtureまたはprobe branchを使う。実GWI-0006 / GWI-0009 Taskはimplementation probeに使わない。
 
-追加で、既に確認済みのsubagent capabilityを壊していないことを軽量に確認してよいが、subagent framework自体の新設は不要。
+同じprobeでsubagent capabilityを再証明する必要はない。PROBE-004 PASSを既知の事実として扱う。
 
-## 14. Tool catalog / Dev deployment
+## 14. Documentation
 
-Tool schemaを変更したら:
+affected source/testsと合わせてREADME / ENTRY / VALIDATION_KNOWLEDGEを更新する。
 
-1. source/tests/docs更新
-2. normal non-force repository reflection
-3. `C:\Dev\DevEnv` をcandidate revisionへ安全に同期
-4. `scripts/restart-dev.ps1`
-5. ChatGPT Web → `Local Operations Dev` → 管理 → ツールの更新
-6. new/updated Toolが見えることを確認
-7. actual Chat → Dev Plugin E2Eを実施
+最低限:
 
-Productionへcandidateを反映しない。
+- Workerはrequested branchへ都度同期し、default branch復帰不要
+- Codexはworktree編集、Local Operationsはcommit/push
+- `finalize_codex_task` でResult Intake
+- direct ChatGPT callbackなし
+- subagent利用可能
+- executable override
 
-## 15. Documentation
+古いproduction-style gateやstrict revision pinningを正常系として残さない。
 
-README / AGENTS / VALIDATION_KNOWLEDGE / ENTRYのうちaffected内容を同期する。
+## 15. T002 implementation bootstrap
 
-最低限READMEへ:
+T002自身を実装する時点では `finalize_codex_task` はまだ存在しない。
 
-- PREPARE / EXECUTE / PERSIST / INTAKE / RELEASE
-- Codexはworktree編集、Local OperationsはGit persistence
-- ChatGPT chat direct callbackは存在しない
-- subagent capabilityはCodex Task内で利用可能
-- persistence HOLD / quarantine recovery
-- Codex executable discovery
-- Dev E2E手順
+初回実装のRepository反映は既存の通常開発経路を使ってよい。T002完成後のE2Eから新方式を使う。
 
-を説明する。
+## 16. Repository reflection
 
-古い「Codexがcommit/pushまで担当する」正常系記述がある場合は更新する。
+実装後は現在のGWI branch / Draft PR #1へ通常のnon-force反映を行う。
 
-## 16. Bootstrap constraint for T002 itself
-
-T002は、まさに「Codex完了後のLocal Operations Git persistence」を実装するbridge Taskである。
-
-したがってT002自身の最初の実装runでは、未実装のfinalize機能へ自己依存しない。
-
-初回reflectionは既存の明示的・非forceなRepository write routeで行い、どのrouteを使ったかCompletion Reportに記録する。
-
-T002完成後のE2Eから新しいPersistence routeを使用する。
-
-## 17. Repository reflection
-
-実装完了後:
-
-- branch: `gwi-0010-ai-local-operations`
-- normal non-force update only
-- remote HEAD readback
-- critical changed-file readback
-- Draft PR #1 update
-- Tracking Issue #16へResult receipt
+- force pushしない
 - mergeしない
-- Productionへpromoteしない
 
-## 18. Completion Report
+remote HEADや全fileの厳格readbackをCompletion条件にはしない。push成功とPR上の更新が確認できれば十分。
 
-必須:
+## 17. Completion Report
 
-- audited current lifecycle
-- confirmed probe findingsをどう反映したか
-- final PREPARE / EXECUTE / PERSIST / INTAKE / RELEASE contract
-- added/changed MCP Tool schema
-- Git persistence safety boundary
-- remote advancement / divergence behavior
-- Codex executable resolution方式
-- Result Intake response example
-- quarantined probe recovery result
-- unit/integration/full suite results
-- Development E2E receipt
-- persisted commit / remote readback evidence
-- Worker FREE evidence
-- remaining limitation: automatic Chat callback未実装
-- implementation commit SHA
-- remote HEAD
+簡潔に以下を報告:
+
+-変更したlifecycle
+- `finalize_codex_task` schema
+- Codex executable override方式
+- tests
+- Development E2E結果
+- probe Worker recovery結果
+- implementation commit
 - PR URL
-- Issue receipt URL
-- T002自身のbootstrap reflection route
+- known limitation: automatic Chat callbackなし
 
-## 19. Stop / HOLD
+## 18. HOLD / failure
 
-以下は推測で進めずHOLD:
+次のような実害がある時だけ停止する。
 
-- target repository / branch / lease identityを一意に確定できない
-- Codex turn completionを確認できない
-- remote divergenceをnon-destructiveに解消できない
-- persistenceにforce / destructive cleanupが必要
-- unexpected sibling repository変更がある
-- secret / credential混入の疑いがある
-- local-only workを破棄しないと続行できない
-- Production変更が必要
-- auto-continuation policyなどGWI-0009 owner scopeの判断が必要
+- requested branchへ通常同期できない
+- Workerに前Taskの未保存成果が残っている
+- Codex turnが完了していない
+- commit/pushに失敗する
+- force/destructive操作なしでは続行できない
+- secretをcommitしそうな状態
+
+それ以外は診断情報として扱い、不要なblocking gateにしない。
