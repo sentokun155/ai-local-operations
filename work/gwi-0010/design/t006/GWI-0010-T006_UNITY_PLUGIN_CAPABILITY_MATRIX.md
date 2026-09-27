@@ -1,11 +1,11 @@
 # GWI-0010-T006 Unity Plugin Capability Matrix
 
-- Status: **HOLD / UNITY_CONNECTION_UNAVAILABLE**
+- Status: **PASS / UNITY_ROUTE_DECISION_READY**
 - Task: GWI-0010-T006 — Codex-native Unity Plugin Capability Audit
 - Date: 2026-09-27
 - Repository: sentokun155/ai-local-operations
-- Target branch: origin/gwi-0010-ai-local-operations resolved to the prepared commit
-- Worktree: detached at the prepared commit for isolated Task-owned document changes
+- Target branch: gwi-0010-ai-local-operations
+- Worktree: isolated T006 checkout; repository reflection uses normal non-force Git operations
 - Prepared commit: 1e945c01782e3019de4efa1cff041d87d6e8bc73
 - Task Request blob: ef60aaaa427a535e6febcac4d8d746206dfc88c3
 
@@ -40,7 +40,7 @@ The plugin manifest declares a skills directory and has no MCP tool/server decla
 
 The README documents **unity mcp configure codex** as a separate CLI setup that gives a client Unity tools. That configuration command was not run: it writes client configuration and is outside this task's allowed repository-document mutation.
 
-## Current Codex-native surface observation
+## Initial no-Editor surface observation
 
 At audit time, the active task exposed 244 callable tool definitions. No tool name or description contained “Unity”. The MCP resource catalog returned 36 resources, including 7 plugin resources; none identified Unity. This does not erase the locally installed Unity skill package. It means this task had no direct Unity MCP tool wrapper available in its callable surface.
 
@@ -63,6 +63,8 @@ The package skill documents **unity list --format json** as a read-only catalog 
 
 ## Capability matrix
 
+Rows in this matrix record the initial no-Editor snapshot. Time-sensitive findings are superseded by the live follow-up section below.
+
 | Capability | Codex-native Unity Plugin | app-server Worker | Local Operations MCP reproducibility | Recommended route |
 |---|---|---|---|---|
 | Plugin identity and origin | **Observed:** Unity **unity** plugin, **0.1.6-beta**, Unity Technologies, installed from Unity-Technologies/unity-agent-plugin at revision **566368b...**. | Not the Unity plugin identity surface. | Can record the repository-approved adapter/version identity; do not infer it from Worker tool names. | Preserve plugin identity as an environment observation and pin CLI/Editor versions per run. |
@@ -79,9 +81,37 @@ The package skill documents **unity list --format json** as a read-only catalog 
 | Busy Editor, concurrency, package/license | **Documented:** starting/unreachable states, explicit project selection for multiple Editors, Pipeline package requirement for live tools, and separate batch-test path. **Unknown:** current busy/license/package state. | T005 recommends a separate Unity adapter and no assumed Unity readiness. | Preflight and project-level serialization are implementable; license acceptance remains Human/external. | Do not install packages, accept licenses, or clean up failing state implicitly. |
 | Route decision | Static package evidence supports a candidate design, but live Editor schemas are missing. | T005 is a separate Worker-side routing decision. | A bounded adapter is plausible; equivalence is not yet verified. | **Conditional hybrid:** retain the Unity skill/CLI for interactive authoring; add only a profile-bound Local Operations validation adapter after live catalog and host lifecycle validation. |
 
-## Decision limit
+## Live Editor follow-up (2026-09-27)
 
-The local package is sufficiently identified to design a bounded candidate route, but the audit cannot establish the actual Editor-specific tool list, schemas, response shapes, project selection behavior, or a safe existing test. Those require one intended Unity Editor connected through the Pipeline package. The final result therefore remains **HOLD / UNITY_CONNECTION_UNAVAILABLE**.
+This section supersedes time-dependent connection, catalog, test, console, and compile-state findings above. Static plugin identity and T005 separation remain unchanged.
+
+| Capability | Current live finding | Boundary |
+|---|---|---|
+| Direct Codex Unity tools | 244 active tools; zero Unity name/description matches. The installed package declares skills and a local executor, not a fixed MCP catalog. | Do not call the Pipeline commands direct Codex MCP tools. |
+| Live Editor catalog | unity list returned 149 built-in commands with names, descriptions, and input schemas. | No per-command output schemas are declared; no custom project command was listed. |
+| Editor target | One ready Editor at 127.0.0.1:7800; project C:/Users/sennn/2D_RPG_Project6_git; Unity 6000.3.9f1. | Multi-Editor ambiguity was not probed. |
+| State and tests | editor_status: not compiling, no domain reload, Play Mode stopped. list_tests found one EditMode stub, no PlayMode tests; one filtered EditMode test passed 1/1. | Only a minimal EditMode route was exercised. |
+| Console and logs | get_console_logs severity=error returned zero entries. | Editor.log was not read; no dedicated Editor.log tool was observed. |
+| Timeout/cancel | run_tests declares async_tests and timeout (default 300 seconds); test_status and cancel_tests are present. | Async, timeout, and cancellation behavior were not exercised. |
+
+Relevant observed schemas and result shapes:
+
+| Tool | Input schema | Classification / output |
+|---|---|---|
+| editor_status | None. | Read-only; data.result has status, compiling, domainReloadInProgress, playMode, lastHeartbeat, projectPath, unityVersion. |
+| list_tests | mode:string optional, all/editor/playmode, default all. | Read-only; data.result has Mode, Count, Tests, success, result, message. |
+| run_tests | mode:string; filter:string; filter_type:string; include_explicit:bool; async_tests:bool; timeout:int seconds. Defaults: all, empty, testName, false, false, 300. | Test execution; observed data.result has Summary, Results, Duration, StatusPath, Mode, FilterApplied, success, result. |
+| get_console_logs | severity:string all/log/warning/error; limit:int default 100, capped at 1000. | Read-only; total=0, returned=0, logs=[]. |
+| test_status / cancel_tests | None. | Read-only poll / cancellation control; not exercised. |
+
+The command envelope contains success, command, data, errors, and warnings. The endpoint observed was loopback; the wire protocol was not inspected. This supports PASS / UNITY_ROUTE_DECISION_READY for a bounded route choice, not full tool parity.
+
+Still unknown: PlayMode execution, Editor.log retrieval, output schemas for unprobed commands, busy/multiple-Editor behavior, cancellation, timeout, compile failure, Safe Mode, and direct Unity MCP configuration. No MCP client configuration was written.
+
+## Decision limit
+The result is **PASS / UNITY_ROUTE_DECISION_READY** for the route choice, not a claim of full tool parity. Keep the Unity skill/CLI for interactive Editor work and limit any future Local Operations adapter to profile-bound test lifecycle and result collection.
+
+Remaining unverified: PlayMode execution, Editor.log retrieval, unprobed command output schemas, busy/multiple-Editor handling, cancellation, timeout, compile failure, Safe Mode, and direct Unity MCP configuration. No Unity MCP client configuration was written.
 
 ## Sources
 

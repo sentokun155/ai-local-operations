@@ -6,7 +6,7 @@ Basis: [Capability Matrix](GWI-0010-T006_UNITY_PLUGIN_CAPABILITY_MATRIX.md)
 
 ## Summary
 
-The installed Unity plugin is a Codex skill package backed by the local Unity CLI. Its static skill documents describe both live Editor control through Unity's Pipeline package and batch EditMode/PlayMode testing. The plugin package does not declare a fixed MCP server or tool schema. The current Codex task had no Unity callable tool wrapper, and **unity status** reported zero connected Editors.
+The installed Unity plugin is a Codex skill package backed by the local Unity CLI. Its static skill documents describe both live Editor control through Unity's Pipeline package and batch EditMode/PlayMode testing. The plugin package does not declare a fixed MCP server or tool schema. The Codex task catalog still has no Unity callable tool wrapper. The initial status probe found no Editor; the later follow-up connected to a ready Editor through the CLI/Pipeline route.
 
 The candidate route is hybrid:
 
@@ -14,9 +14,9 @@ The candidate route is hybrid:
 2. If Local Operations later needs repository validation, implement a small profile-bound host adapter that invokes documented Unity CLI operations and owns project identity, process lifecycle, timeout/cancel, and artifacts.
 3. Do not reproduce the plugin's whole dynamic command surface or pass arbitrary shell/Editor commands through Local Operations.
 
-This is a design candidate, not a routing PASS. The live Editor catalog and behavior remain unverified.
+This is a design input, not an implementation authorization. The live catalog and behavior from the follow-up are recorded below, and the route decision is now ready.
 
-## Observed, documented, inferred, and unknown
+## Initial evidence classification
 
 | Class | Finding |
 |---|---|
@@ -45,7 +45,7 @@ The package documentation describes live status/list/command operations as CLI-t
 
 The package also documents batch testing as a separate route: **unity test** launches the Editor command line with test-run arguments, waits for completion, and returns a report. That path does not use the Pipeline server. The exact live Editor endpoint and wire-level protocol were not captured in this task; no private binary inspection or configuration probing was performed.
 
-### Relation to other GWI-0010 surfaces
+### Relation to other GWI-0010 surfaces (initial view)
 
 - **Local Operations app-server Worker:** T005 is **PASS / ROUTING_DECISION_READY** for its own validation-routing decision. It did not observe this plugin's Desktop tool list and did not establish Unity readiness.
 - **Codex-native / Desktop:** the installed Unity skill package and local CLI are present; no Unity callable tool was exposed in this task, and no Editor was reported by the CLI.
@@ -71,9 +71,9 @@ The adapter should not expose generic **unity command**, arbitrary **[CliCommand
 
 | Route | Benefits | Limits | Decision |
 |---|---|---|---|
-| Use the Unity plugin only | Official skills and CLI knowledge support interactive Editor authoring and Unity-specific guidance. | Does not by itself bind tests to a Worker lease, own a host run ID, enforce repository profiles, or persist bounded result artifacts. The current task had no registered Unity MCP tool and no connected Editor. | Retain for Codex-native interactive work. Do not treat it as the Worker validation route. |
+| Use the Unity plugin only | Official skills and CLI knowledge support interactive Editor authoring and Unity-specific guidance. | Does not by itself bind tests to a Worker lease, own a host run ID, enforce repository profiles, or persist bounded result artifacts. The initial pass had no connected Editor; the live follow-up now documents its available route. | Retain for Codex-native interactive work. Do not treat it as the Worker validation route. |
 | Reimplement Unity tools in Local Operations | Could expose a uniform host API. | Would duplicate a broad and project-extensible command surface, increase mutation authority, and require maintaining Editor protocol behavior that the CLI already supplies. | Not recommended. |
-| Hybrid | Keeps Unity-authored skills/CLI for direct work and gives Local Operations a small host-owned test lifecycle with repository binding. | Requires a separate live connection check and profile/host validation before implementation. | **Recommended candidate**, conditional on T006 live-catalog follow-up and a separately authorized implementation task. |
+| Hybrid | Keeps Unity-authored skills/CLI for direct work and gives Local Operations a small host-owned test lifecycle with repository binding. | The live connection check is complete; profile and host validation remain required before implementation. | **Recommended candidate**, supported by T006 live-catalog evidence but still pending host lifecycle validation and a separately authorized implementation task. |
 
 ## Test routing
 
@@ -96,7 +96,7 @@ The CLI documentation describes a JSON result envelope with success, command, da
 
 The CLI's **logs** command reads the CLI's own logs. The skill directs compile-error diagnosis to filtered Editor.log content. The Pipeline skill documentation says Safe Mode prevents the Pipeline package from loading, so live status/list/command connection may be unavailable. A host adapter should preserve raw log/report paths and classify missing reports or compilation failures without converting them into test results.
 
-The current task did not observe a Unity console, compile state, Editor.log, test report, or test result schema from a connected Editor.
+The initial pass did not observe a Unity console, compile state, Editor.log, test report, or test result schema from a connected Editor. The live follow-up below records the later observations.
 
 ## Editor lifecycle, timeout, and concurrency
 
@@ -110,15 +110,18 @@ Live Editor tools require the project's **com.unity.pipeline** package. Installi
 
 The CLI supports Editor installation and authentication/licensing flows, but the Local Operations adapter should not invoke them implicitly. Package restore, Editor installation, sign-in, license acceptance, Unity Cloud account selection, and project upgrade remain separate Human or explicitly authorized host preparation. Secrets must not appear in process arguments or logs.
 
-## Entry criteria for a route decision
+## Live Editor follow-up evidence
 
-Re-run the live portion from Codex Desktop with the intended Unity 6 project and Editor already available through the supported Pipeline setup. Capture:
+The follow-up observed Unity CLI 1.0.0-beta.9, one ready Editor at 127.0.0.1:7800, project C:/Users/sennn/2D_RPG_Project6_git, and Unity 6000.3.9f1. unity list returned 149 built-in commands with input schemas but no declared per-command output schemas. The Codex task's 244 callable tools still had no Unity name/description match.
 
-- **unity status --format json** with a single intended, ready project and Editor version.
-- **unity list --format json** with exact live tool names, descriptions, groups, parameter schemas, and response envelope.
-- One low-effect read-only tool probe, with raw structured output and provenance.
-- Existing test inventory and profile safety before considering one bounded EditMode or PlayMode probe.
+editor_status reported not compiling, no domain reload, and Play Mode stopped. list_tests found one EditMode documentation stub and no PlayMode tests. Its source was an empty NUnit method. One exact filtered run_tests execution passed 1/1 in 3.25 seconds. An error-only get_console_logs read returned zero records. The project tracked diff remained clean; two unrelated untracked Markdown files had timestamps before this probe and were not changed.
 
-If the Unity MCP surface is intended to be used directly by Codex, inspect it through its supported client/tool catalog after an authorized configuration step. Do not infer its schema from skill prose or write configuration as part of this audit.
+The observed command envelope has success, command, data, errors, and warnings. The test result is nested under data.result and includes Summary, Results, Duration, StatusPath, Mode, FilterApplied, success, and result. This proves a narrow live Editor route and a single EditMode execution, not full output-schema parity, PlayMode support, cancellation, timeout, or compile-failure behavior.
 
-Until those observations exist, keep the result at **HOLD / UNITY_CONNECTION_UNAVAILABLE**.
+## Route decision readiness
+
+The live-entry criteria needed for the route decision are met. Result status: **PASS / UNITY_ROUTE_DECISION_READY**.
+
+Keep the official Unity skill/CLI for interactive Editor commands. If Local Operations needs repository validation, use a profile-bound adapter for the dedicated CLI test lifecycle, run identity, timeout/cancel handling, and result/log collection. Do not expose the Editor's 149-command dynamic surface, arbitrary command names, eval, or project mutation through a generic host tool.
+
+If a future task requires direct Unity MCP calls inside Codex, authorize and inspect the supported client configuration and tool catalog separately. This T006 audit did not write MCP configuration or implement an adapter.
