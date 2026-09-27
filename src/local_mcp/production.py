@@ -126,7 +126,8 @@ def _ensure_checkout(root: Path, branch: str, *, runner: Callable[..., Any]) -> 
     if _git(root, "status", "--porcelain=v1", "--untracked-files=all", runner=runner):
         raise _ProductionFailure("PRODUCTION_CHECKOUT_DIRTY", "Production checkout has local changes; they were preserved.")
 
-    _git(root, "fetch", "origin", branch, runner=runner)
+    branch_refspec = f"refs/heads/{branch}:refs/remotes/origin/{branch}"
+    _git(root, "fetch", "origin", branch_refspec, runner=runner)
     local_ref = f"refs/heads/{branch}"
     remote_ref = f"refs/remotes/origin/{branch}"
     has_local = _run(["git", "-C", str(root), "show-ref", "--verify", "--quiet", local_ref], runner=runner, check=False)[0] == 0

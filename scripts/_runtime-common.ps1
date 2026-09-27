@@ -101,7 +101,8 @@ function Assert-RepositoryRoot([string]$Root, [string]$ExpectedBranch, [switch]$
 
 function Sync-RuntimeBranch([string]$Root, [string]$ExpectedBranch, [switch]$RequireClean) {
     $branch = Assert-RepositoryRoot -Root $Root -ExpectedBranch $ExpectedBranch -RequireClean:$RequireClean
-    & git -C $Root fetch origin $branch
+    $branchRefSpec = "refs/heads/$branch`:refs/remotes/origin/$branch"
+    & git -C $Root fetch origin $branchRefSpec
     if ($LASTEXITCODE -ne 0) { throw "origin branchを取得できません。" }
     $counts = & git -C $Root rev-list --left-right --count "HEAD...origin/$branch"
     if ($LASTEXITCODE -ne 0) { throw "runtime branchの差分を確認できません。" }

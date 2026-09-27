@@ -79,9 +79,9 @@ class ProductionRuntimeTests(unittest.TestCase):
             return completed
         return subprocess.run(actual, **kwargs)
 
-    def create_production_clone(self) -> None:
+    def create_production_clone(self, branch: str | None = None) -> None:
         subprocess.run(
-            ["git", "clone", "--branch", self.branch, str(self.bare), str(self.production)],
+            ["git", "clone", "--branch", branch or self.branch, str(self.bare), str(self.production)],
             check=True, capture_output=True,
         )
         git(self.production, "remote", "set-url", "origin", self.clone_url)
@@ -120,6 +120,14 @@ class ProductionRuntimeTests(unittest.TestCase):
         self.assertEqual(result["status"], "READY", result)
         self.assertEqual(result["checkoutAction"], "FAST_FORWARDED")
         self.assertEqual(git(self.production, "rev-parse", "HEAD"), expected)
+        self.assertEqual(git(self.production, "branch", "--show-current"), self.branch)
+
+    def test_main_single_branch_clone_can_fetch_and_switch_to_requested_branch(self) -> None:
+        self.create_production_clone("main")
+
+        result = self.prepare()
+        self.assertEqual(result["status"], "READY", result)
+        self.assertEqual(result["checkoutAction"], "BRANCH_SWITCHED")
         self.assertEqual(git(self.production, "branch", "--show-current"), self.branch)
 
     def test_dirty_production_checkout_is_held_and_preserved(self) -> None:
