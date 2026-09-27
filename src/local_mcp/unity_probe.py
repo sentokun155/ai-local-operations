@@ -94,14 +94,14 @@ def _extract_version(output: Any) -> str | None:
 def _safe_instance(value: Mapping[str, Any]) -> dict[str, Any]:
     instance: dict[str, Any] = {
         "state": _bounded_text(value.get("state"), 64),
-        "projectPath": _bounded_text(value.get("projectPath"), 2048),
-        "editorVersion": _bounded_text(value.get("editorVersion"), 128),
+        "projectPath": _bounded_text(value.get("projectPath", value.get("project")), 2048),
+        "editorVersion": _bounded_text(value.get("editorVersion", value.get("version")), 128),
         "pid": None,
     }
     pid = value.get("pid")
     if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
         instance["pid"] = pid
-    port = value.get("pipelinePort")
+    port = value.get("pipelinePort", value.get("port"))
     if isinstance(port, int) and not isinstance(port, bool) and 0 < port <= 65535:
         instance["pipelinePort"] = port
     return instance
@@ -337,9 +337,8 @@ def _safe_pipeline_diagnostic(
     diagnostic["instances"] = [_safe_pipeline_instance(row) for row in rows[:MAX_RETURNED_INSTANCES]]
     safe_rows = [
         row for row in rows
-        if (ntpath.normcase(ntpath.normpath(path)) == ntpath.normcase(ntpath.normpath(T008_PROJECT_PATH)))
         for path in [_pipeline_project_path(row)]
-        if path
+        if path and ntpath.normcase(ntpath.normpath(path)) == ntpath.normcase(ntpath.normpath(T008_PROJECT_PATH))
     ]
     diagnostic["targetVisible"] = bool(safe_rows)
     diagnostic["available"] = command_succeeded and (
@@ -888,7 +887,9 @@ def _probe_unity_host_connectivity(
             pipeline_handshake=pipeline_handshake,
         )
 
-    raw_instances = payload.get("instances", [])
+    data = payload.get("data")
+    status_container = data if isinstance(data, Mapping) and "instances" in data else payload
+    raw_instances = status_container.get("instances", [])
     if not isinstance(raw_instances, list):
         return _result(
             environment=environment,

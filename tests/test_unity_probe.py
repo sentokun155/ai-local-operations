@@ -76,6 +76,38 @@ def probe(
 
 
 class UnityProbeTests(unittest.TestCase):
+    def test_installed_cli_status_envelope_matches_target_editor(self):
+        runner = QueueRunner([
+            completed([], stdout="1.0.0-beta.9"),
+            completed([], stdout=json.dumps({
+                "success": True,
+                "command": "status",
+                "data": {"count": 1, "instances": [{
+                    "state": "ready",
+                    "project": T008_PROJECT_PATH,
+                    "version": T008_EDITOR_VERSION,
+                    "pid": 5352,
+                    "port": 7800,
+                    "accessToken": "never-return-this-token",
+                }]},
+                "errors": [],
+            })),
+        ])
+
+        result = probe(runner)
+
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(result["verdict"], "DIRECT_MATCH")
+        self.assertEqual(result["instanceCount"], 1)
+        self.assertEqual(result["instances"], [{
+            "state": "ready",
+            "projectPath": T008_PROJECT_PATH,
+            "editorVersion": T008_EDITOR_VERSION,
+            "pid": 5352,
+            "pipelinePort": 7800,
+        }])
+        self.assertNotIn("never-return-this-token", json.dumps(result))
+
     def test_ready_t008_instance_is_a_direct_match_and_uses_only_read_only_commands(self):
         payload = {
             "success": True,
