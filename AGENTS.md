@@ -36,7 +36,9 @@ Do not:
 - discard unexpected local modifications
 - use destructive cleanup as a recovery shortcut
 
-If expected remote / branch / Task Request identity does not match, stop and report HOLD.
+For ordinary Development work, do not require exact starting HEAD, Task Request blob pinning, or redundant local/remote revision equality checks unless the task explicitly needs reproducibility at that exact revision.
+
+Use the requested repository and branch, update them normally, and block only when there is a concrete risk such as working in the wrong repository, overwriting unpersisted local work, or requiring destructive recovery.
 
 ## Runtime topology
 
@@ -56,15 +58,13 @@ Development:
 - Plugin: `Local Operations Dev`
 - tunnel-client profile: `local-operations-dev`
 - runtime: `C:\Dev\DevEnv`
-- separate Tunnel ID from Production
 
 Production:
 - Plugin: `Local Operations`
 - tunnel-client profile: `local-operations`
 - runtime: `C:\Dev\ProdEnv`
-- separate Tunnel ID from Development
 
-Do not share one Tunnel ID between Dev and Prod.
+Dev / Prod separation exists to avoid process, profile, and Plugin collision. Do not turn this into a customer-facing release-management system. Exact main-only, immutable-checkout, promotion, and revision-equality gates are not goals by themselves.
 
 ## Secret / runtime boundary
 
@@ -85,80 +85,53 @@ Standard tunnel runtime credential is read from the Windows User environment var
 
 Scripts must not accept the key as a command-line argument, print it, or persist it into the repository.
 
-If current `C:\Dev\local-mcp` contains secrets/runtime state, exclude them during migration.
-
 ## Implementation principles
 
 - Prefer bounded tools over generic shell exposure.
-- Validate tool inputs server-side.
-- Keep Repository-backed Task Request canonical.
+- Validate only the inputs needed to prevent concrete mistakes.
+- Keep Repository-backed Task Requests as task instructions, but do not over-pin their revision during ordinary Development work.
 - Chat must not need local absolute paths in the normal dispatch route.
 - Local path / Worker Slot / concrete Codex cwd resolution is a Local Operations responsibility.
 - One Worker Slot may be leased to only one active Task.
 - Codex cwd must be the selected repository root, not the Worker root.
 - Codex Desktop Project registration is optional UI organization, not Worker routing authority.
-- Unexpected local state is quarantined, not silently reset or deleted.
+- Preserve local-only work when an operation fails.
 - `DISPATCHED` means turn/start acknowledgement, not Task completion.
 - Duplicate / uncertain dispatch must not create a second Task under the same identity.
-- Candidate revisions are validated through the Development runtime before Production promotion.
-
+- Worker FREE does not require returning to a default branch; the next PREPARE operation may switch to the requested branch.
 
 ## Personal-tool proportionality rule
 
 This repository is a **personal local tool**, not a customer-facing production service. Design and review must use that risk profile.
 
-Do not add or preserve operational complexity only because it would be conventional for a customer-facing production system. A guard, state, promotion gate, repository constraint, or verification step needs a concrete benefit for this repository.
+Do not add or preserve operational complexity only because it would be conventional for a customer-facing production system. A guard, state, repository constraint, or verification step needs a concrete benefit for this repository.
 
 Strong safeguards are justified when they directly prevent at least one of these concrete risks:
 
 - secret / credential exposure
 - destructive loss of local work or data
-- dispatch to the wrong repository / branch / Task identity
+- dispatch to the wrong repository or branch
 - duplicate or uncertain dispatch that can create duplicate work
 - concurrent use of the same Worker Slot
-- Dev / Prod Tunnel or process collision that causes the wrong local service to be used
-- explicit authority escalation beyond the requested local operation
+- Dev / Prod Tunnel or process collision
+- explicit authority escalation such as force push or merge without request
 
 The following are **not sufficient reasons by themselves** for added machinery:
 
-- conventional production-deployment practice
+- conventional production deployment practice
 - immutable-runtime or clean-checkout purity
 - exact local/remote revision equality when no concrete safety property depends on it
-- customer-facing availability / release-management assumptions that do not apply to this personal tool
+- exact starting HEAD or Task Request blob pinning for ordinary Development work
+- customer-facing availability / release-management assumptions
 - extra evidence, gates, states, or recovery paths added only for theoretical completeness
 
-Prefer observation and diagnostics over blocking when blocking does not prevent a concrete risk. In particular, Development runtime dirtiness or branch choice must not be treated as an error merely to emulate production deployment discipline.
+Prefer observation and diagnostics over blocking when blocking does not prevent a concrete risk.
 
-### Avoid churn; fix comprehensively on the next relevant change
-
-Do **not** immediately rewrite already-working code solely because an existing mechanism is now judged over-engineered. Rework plus repeated verification has a cost.
-
-When the affected area next requires a real modification, the same bounded change must:
-
-1. reassess the existing mechanism against this proportionality rule;
-2. remove or relax unnecessary production-style constraints in that area rather than layering another exception on top;
-3. keep only safeguards with an explicit concrete risk they mitigate;
-4. update source, documentation, and tests together so obsolete behavior is not left as an accidental contract;
-5. verify the resulting behavior once at the actual supported runtime boundary.
-
-Do not perpetuate an unnecessary mechanism merely because it already exists. Do not create a separate cleanup task unless the mechanism itself is causing current harm or the Human explicitly requests one.
+When an affected area next needs a real modification, simplify obsolete production-style constraints instead of adding another exception layer.
 
 ## Supported shell / environment verification
 
 Repository-backed operational scripts are supported on **PowerShell 7+ (`pwsh.exe`)**.
-
-Do not claim Windows operational compatibility from a `pwsh` test as if it also verified Windows PowerShell 5.1 (`powershell.exe`). Windows PowerShell 5.1 is not a supported Local Operations operational shell.
-
-When runtime compatibility matters, record the concrete environment:
-- OS
-- shell executable
-- shell version
-- PSEdition
-- runtime checkout
-- Tunnel profile
-- relevant encoding assumption
-
-A Human-observed Windows PowerShell 5.1 failure showed that UTF-8 BOM-less scripts containing non-ASCII diagnostics can be mis-decoded before any API-key or Worker-Pool validation executes. Treat parser failure, Worker configuration HOLD, and Tunnel/MCP runtime failure as distinct failure classes.
 
 Current Human-confirmed Worker settings:
 - Worker root: `C:\Dev\WorkerRoot`
@@ -171,17 +144,17 @@ See `work/gwi-0010/VALIDATION_KNOWLEDGE.md` for derived operational knowledge.
 
 ## Operational scripts
 
-Repository-backed scripts must include:
+Repository-backed scripts include:
 
 - `scripts/setup.ps1`
 - `scripts/start-all.ps1`
 - `scripts/restart-dev.ps1`
 - `scripts/restart-prod.ps1`
 
-Scripts must preserve Dev / Prod isolation and must not use destructive Git cleanup to recover unexpected runtime checkout state.
+Keep Dev / Prod process/profile isolation. Do not add release-management behavior to these scripts unless it prevents a concrete local failure.
 
 ## Verification
 
-Implementation work must include bounded unit/integration tests and an E2E probe that does not execute a real GWI task.
+Implementation work should include focused unit/integration tests and one practical Development E2E for the changed behavior.
 
-Do not use GWI-0006 / GWI-0009 production tasks as implementation probes. They may be used only after the local implementation is accepted and Chat explicitly dispatches them.
+Do not multiply verification layers only to prove the same condition repeatedly.
