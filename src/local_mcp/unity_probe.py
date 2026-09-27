@@ -249,13 +249,58 @@ def _pipeline_rows(payload: Any) -> list[Mapping[str, Any]]:
             for key in collection_keys:
                 collection = container.get(key)
                 if isinstance(collection, list):
-                    candidates.extend(collection[:MAX_RETURNED_INSTANCES])
+                    candidates.extend(collection)
                 elif isinstance(collection, dict):
                     candidates.append(collection)
-        rows.extend(item for item in candidates[:MAX_RETURNED_INSTANCES] if isinstance(item, Mapping))
-        if len(rows) >= MAX_RETURNED_INSTANCES:
-            break
-    return rows[:MAX_RETURNED_INSTANCES]
+        rows.extend(item for item in candidates if isinstance(item, Mapping))
+    return rows
+
+
+def _bounded_count(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= MAX_INSTANCE_COUNT:
+        return value
+    return None
+
+
+def _pipeline_project_path(row: Mapping[str, Any]) -> str | None:
+    for key in ("projectPath", "project"):
+        raw_value = row.get(key)
+        if isinstance(raw_value, Mapping):
+            raw_value = raw_value.get("projectPath", raw_value.get("path"))
+        value = _bounded_text(raw_value, 2048)
+        if value:
+            return value
+    return None
+
+
+def _safe_pipeline_instance(row: Mapping[str, Any]) -> dict[str, Any]:
+    instance: dict[str, Any] = {}
+    project_path = _pipeline_project_path(row)
+    if project_path:
+        instance["projectPath"] = project_path
+    pid = row.get("pid")
+    if isinstance(pid, int) and not isinstance(pid, bool) and 0 < pid <= 0xFFFFFFFF:
+        instance["pid"] = pid
+
+    safe_mode = row.get("safeMode")
+    detected = safe_mode.get("detected") if isinstance(safe_mode, Mapping) else None
+    if not isinstance(detected, bool):
+        detected = safe_mode if isinstance(safe_mode, bool) else row.get("isSafeMode")
+    if isinstance(detected, bool):
+        instance["safeModeDetected"] = detected
+
+    for key in (
+        "state", "status", "mode", "pipelineStatus", "packageStatus",
+        "compiling", "isCompiling", "pipelineAvailable", "pipelineReady", "connected", "ready",
+    ):
+        value = row.get(key)
+        if isinstance(value, bool):
+            instance[key] = value
+        elif key in {"state", "status", "mode", "pipelineStatus", "packageStatus"}:
+            bounded = _bounded_text(value, 64)
+            if bounded:
+                instance[key] = bounded
+    return instance
 
 
 def _safe_pipeline_diagnostic(
@@ -267,6 +312,9 @@ def _safe_pipeline_diagnostic(
     diagnostic: dict[str, Any] = {
         "available": False,
         "candidateCount": 0,
+        "instancesInSafeMode": None,
+        "targetVisible": False,
+        "instances": [],
         "safeMode": None,
         "compiling": None,
         "pipelineUnavailable": None,
@@ -286,6 +334,14 @@ def _safe_pipeline_diagnostic(
         return diagnostic
     rows = _pipeline_rows(payload)
     diagnostic["candidateCount"] = min(len(rows), MAX_INSTANCE_COUNT)
+    diagnostic["instances"] = [_safe_pipeline_instance(row) for row in rows[:MAX_RETURNED_INSTANCES]]
+    safe_rows = [
+        row for row in rows
+        if (ntpath.normcase(ntpath.normpath(path)) == ntpath.normcase(ntpath.normpath(T008_PROJECT_PATH)))
+        for path in [_pipeline_project_path(row)]
+        if path
+    ]
+    diagnostic["targetVisible"] = bool(safe_rows)
     diagnostic["available"] = command_succeeded and (
         not isinstance(payload, dict)
         or "success" not in payload
@@ -299,11 +355,22 @@ def _safe_pipeline_diagnostic(
             nested = payload.get(key)
             if isinstance(nested, Mapping):
                 diagnostic_rows.append(nested)
+                summary = nested.get("summary")
+                if isinstance(summary, Mapping):
+                    diagnostic_rows.append(summary)
+                    count = _bounded_count(summary.get("instancesInSafeMode"))
+                    if count is not None:
+                        diagnostic["instancesInSafeMode"] = count
 
     safe_mode_values: list[bool] = []
     compiling_values: list[bool] = []
     unavailable_values: list[bool] = []
     for row in diagnostic_rows:
+        safe_mode = row.get("safeMode")
+        if isinstance(safe_mode, Mapping):
+            detected = safe_mode.get("detected")
+            if isinstance(detected, bool):
+                safe_mode_values.append(detected)
         for key in ("safeMode", "isSafeMode"):
             value = row.get(key)
             if isinstance(value, bool):
@@ -328,6 +395,15 @@ def _safe_pipeline_diagnostic(
             elif normalized in {"unavailable", "not_ready", "disconnected"}:
                 unavailable_values.append(True)
 
+    safe_mode_count = diagnostic["instancesInSafeMode"]
+    if isinstance(safe_mode_count, int):
+        safe_mode_values.append(safe_mode_count > 0)
+    for row in rows:
+        safe_mode = row.get("safeMode")
+        detected = safe_mode.get("detected") if isinstance(safe_mode, Mapping) else None
+        if isinstance(detected, bool):
+            safe_mode_values.append(detected)
+
     diagnostic["safeMode"] = True if True in safe_mode_values else (False if safe_mode_values else None)
     diagnostic["compiling"] = True if True in compiling_values else (False if compiling_values else None)
     diagnostic["pipelineUnavailable"] = (
@@ -339,6 +415,146 @@ def _safe_pipeline_diagnostic(
     return diagnostic
 
 
+_ERROR_CODE_PATTERN = re.compile(r"[A-Z0-9][A-Z0-9_]{0,63}\Z")
+
+
+def _catalog_collection(payload: Any) -> list[Any] | None:
+    containers: list[Any] = []
+    if isinstance(payload, Mapping):
+        containers.append(payload)
+        for key in ("data", "result"):
+            nested = payload.get(key)
+            if isinstance(nested, Mapping):
+                containers.append(nested)
+            elif isinstance(nested, list):
+                return nested
+    elif isinstance(payload, list):
+        return payload
+
+    for container in containers:
+        for key in ("tools", "catalog", "toolCatalog"):
+            collection = container.get(key)
+            if isinstance(collection, list):
+                return collection
+            if isinstance(collection, Mapping) and isinstance(collection.get("tools"), list):
+                return collection["tools"]
+    return None
+
+
+def _handshake_project_path(payload: Mapping[str, Any]) -> str | None:
+    for container in (payload, payload.get("data"), payload.get("result")):
+        if not isinstance(container, Mapping):
+            continue
+        project_path = _pipeline_project_path(container)
+        if project_path:
+            return project_path
+    return None
+
+
+def _handshake_error_codes(payload: Mapping[str, Any]) -> list[str]:
+    codes: list[str] = []
+    for container in (payload, payload.get("data")):
+        if not isinstance(container, Mapping):
+            continue
+        errors = container.get("errors")
+        if isinstance(errors, list):
+            values = list(errors)
+        else:
+            values = []
+        direct = container.get("errorCode")
+        if isinstance(direct, str):
+            values.append({"code": direct})
+        for error in values:
+            code = error.get("code") if isinstance(error, Mapping) else error
+            if (
+                isinstance(code, str)
+                and _ERROR_CODE_PATTERN.fullmatch(code)
+                and code not in codes
+            ):
+                codes.append(code)
+                if len(codes) >= 8:
+                    return codes
+    return codes
+
+
+def _safe_pipeline_handshake(
+    output: Any,
+    *,
+    exit_code: Any,
+    error: str | None = None,
+) -> dict[str, Any]:
+    diagnostic: dict[str, Any] = {
+        "state": "UNRESOLVED",
+        "exitCode": (
+            exit_code
+            if isinstance(exit_code, int)
+            and not isinstance(exit_code, bool)
+            and -MAX_PROCESS_EXIT_CODE <= exit_code <= MAX_PROCESS_EXIT_CODE
+            else None
+        ),
+        "success": None,
+        "catalogValid": False,
+        "toolCount": None,
+        "projectPath": None,
+        "errorCodes": [],
+    }
+    if error:
+        diagnostic["error"] = error if error in {"UNITY_LIST_TIMEOUT", "UNITY_CLI_LAUNCH_FAILED"} else "UNITY_LIST_FAILED"
+        return diagnostic
+
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="replace")
+    if not isinstance(output, str) or len(output) > MAX_PIPELINE_OUTPUT_CHARS:
+        diagnostic["state"] = "NOT_CONNECTED" if diagnostic["exitCode"] not in (None, 0) else "UNRESOLVED"
+        diagnostic["error"] = "UNITY_LIST_RESPONSE_INVALID"
+        return diagnostic
+    try:
+        payload = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        diagnostic["state"] = "NOT_CONNECTED" if diagnostic["exitCode"] not in (None, 0) else "UNRESOLVED"
+        diagnostic["error"] = "UNITY_LIST_RESPONSE_INVALID"
+        return diagnostic
+    if not isinstance(payload, Mapping):
+        diagnostic["state"] = "NOT_CONNECTED" if diagnostic["exitCode"] not in (None, 0) else "UNRESOLVED"
+        diagnostic["error"] = "UNITY_LIST_RESPONSE_INVALID"
+        return diagnostic
+
+    success_present = "success" in payload
+    success = payload.get("success")
+    diagnostic["success"] = success if isinstance(success, bool) else None
+    diagnostic["errorCodes"] = _handshake_error_codes(payload)
+    project_path = _handshake_project_path(payload)
+    diagnostic["projectPath"] = project_path
+
+    collection = _catalog_collection(payload)
+    catalog_valid = collection is not None and all(
+        isinstance(tool, Mapping)
+        and isinstance(tool.get("name"), str)
+        and bool(tool.get("name").strip())
+        for tool in collection
+    )
+    diagnostic["catalogValid"] = catalog_valid
+    if catalog_valid:
+        diagnostic["toolCount"] = min(len(collection), MAX_INSTANCE_COUNT)
+
+    exit_code_valid = diagnostic["exitCode"] is not None
+    command_succeeded = exit_code_valid and diagnostic["exitCode"] == 0
+    success_valid = not success_present or isinstance(success, bool)
+    project_matches = project_path is None or (
+        ntpath.normcase(ntpath.normpath(project_path))
+        == ntpath.normcase(ntpath.normpath(T008_PROJECT_PATH))
+    )
+    if command_succeeded and success_valid and success is not False and catalog_valid and project_matches:
+        diagnostic["state"] = "CONNECTED"
+    elif diagnostic["exitCode"] not in (None, 0) or success is False or (catalog_valid and not project_matches):
+        diagnostic["state"] = "NOT_CONNECTED"
+    elif success_present and not success_valid:
+        diagnostic["error"] = "UNITY_LIST_RESPONSE_INVALID"
+    elif not catalog_valid:
+        diagnostic["error"] = "UNITY_LIST_CATALOG_INVALID"
+    return diagnostic
+
+
 def _diagnosis(
     process_observation: Mapping[str, Any],
     pipeline_diagnostic: Mapping[str, Any],
@@ -346,17 +562,29 @@ def _diagnosis(
     status_success: bool = False,
     instance_count: int = 0,
     direct_match: bool = False,
+    pipeline_handshake: Mapping[str, Any] | None = None,
 ) -> str:
-    if direct_match:
-        return "DIRECT_MATCH"
+    handshake_state = pipeline_handshake.get("state") if isinstance(pipeline_handshake, Mapping) else None
+    if handshake_state == "CONNECTED":
+        return "HOST_PIPELINE_CONNECTED"
+    if handshake_state == "SAFE_MODE":
+        return "SAFE_MODE_OR_PIPELINE_UNAVAILABLE"
     if any(
         pipeline_diagnostic.get(key) is True
         for key in ("safeMode", "compiling", "pipelineUnavailable")
     ):
         return "SAFE_MODE_OR_PIPELINE_UNAVAILABLE"
+    candidate_count = pipeline_diagnostic.get("candidateCount", 0)
+    if (
+        handshake_state == "NOT_CONNECTED"
+        and process_observation.get("present") is True
+        and pipeline_diagnostic.get("targetVisible") is True
+    ):
+        return "PIPELINE_VISIBLE_HANDSHAKE_FAILED"
+    if direct_match:
+        return "DIRECT_MATCH"
     if not pipeline_diagnostic.get("available"):
         return "DIAGNOSTIC_UNRESOLVED"
-    candidate_count = pipeline_diagnostic.get("candidateCount", 0)
     if status_success and instance_count == 0 and isinstance(candidate_count, int) and candidate_count > 0:
         return "PIPELINE_VISIBLE_STATUS_EMPTY"
     if isinstance(candidate_count, int) and candidate_count == 0:
@@ -381,14 +609,27 @@ def _result(
     diagnosis: str = "DIAGNOSTIC_UNRESOLVED",
     process_observation: Mapping[str, Any] | None = None,
     pipeline_diagnostic: Mapping[str, Any] | None = None,
+    pipeline_handshake: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     process_observation = process_observation or {"present": None, "pids": [], "complete": False}
     pipeline_diagnostic = pipeline_diagnostic or {
         "available": False,
         "candidateCount": 0,
+        "instancesInSafeMode": None,
+        "targetVisible": False,
+        "instances": [],
         "safeMode": None,
         "compiling": None,
         "pipelineUnavailable": None,
+    }
+    pipeline_handshake = pipeline_handshake or {
+        "state": "UNRESOLVED",
+        "exitCode": None,
+        "success": None,
+        "catalogValid": False,
+        "toolCount": None,
+        "projectPath": None,
+        "errorCodes": [],
     }
     result: dict[str, Any] = {
         "status": "OK" if verdict == "DIRECT_MATCH" else "HOLD",
@@ -407,6 +648,7 @@ def _result(
         "editorProcessPresent": process_observation.get("present"),
         "editorProcessIds": process_observation.get("pids", []),
         "pipelineDiagnostic": dict(pipeline_diagnostic),
+        "pipelineHandshake": dict(pipeline_handshake),
     }
     if reason:
         result["reason"] = reason
@@ -432,9 +674,21 @@ def _probe_unity_host_connectivity(
     pipeline_diagnostic = {
         "available": False,
         "candidateCount": 0,
+        "instancesInSafeMode": None,
+        "targetVisible": False,
+        "instances": [],
         "safeMode": None,
         "compiling": None,
         "pipelineUnavailable": None,
+    }
+    pipeline_handshake: dict[str, Any] = {
+        "state": "UNRESOLVED",
+        "exitCode": None,
+        "success": None,
+        "catalogValid": False,
+        "toolCount": None,
+        "projectPath": None,
+        "errorCodes": [],
     }
     unity_cli_path = _resolve_cli(
         environment,
@@ -518,6 +772,40 @@ def _probe_unity_host_connectivity(
             error=pipeline_error or "UNITY_PIPELINE_FAILED",
         )
 
+    handshake_error = None
+    handshake_result = None
+    try:
+        handshake_result = _run(
+            [
+                unity_cli_path,
+                "list",
+                "--project-path",
+                T008_PROJECT_PATH,
+                "--format",
+                "json",
+                "--no-banner",
+                "--non-interactive",
+            ],
+            runner=runner,
+        )
+    except subprocess.TimeoutExpired:
+        handshake_error = "UNITY_LIST_TIMEOUT"
+    except OSError:
+        handshake_error = "UNITY_CLI_LAUNCH_FAILED"
+    if handshake_result is not None:
+        pipeline_handshake = _safe_pipeline_handshake(
+            getattr(handshake_result, "stdout", ""),
+            exit_code=getattr(handshake_result, "returncode", None),
+        )
+    else:
+        pipeline_handshake = _safe_pipeline_handshake(
+            None,
+            exit_code=None,
+            error=handshake_error or "UNITY_CLI_LAUNCH_FAILED",
+        )
+    if pipeline_handshake["state"] != "CONNECTED" and pipeline_diagnostic.get("safeMode") is True:
+        pipeline_handshake["state"] = "SAFE_MODE"
+
     try:
         status_result = _run(
             [
@@ -537,9 +825,10 @@ def _probe_unity_host_connectivity(
             unity_cli_version=unity_cli_version,
             verdict="STATUS_FAILED",
             reason="UNITY_STATUS_TIMEOUT",
-            diagnosis=_diagnosis(process_observation, pipeline_diagnostic),
+            diagnosis=_diagnosis(process_observation, pipeline_diagnostic, pipeline_handshake=pipeline_handshake),
             process_observation=process_observation,
             pipeline_diagnostic=pipeline_diagnostic,
+            pipeline_handshake=pipeline_handshake,
         )
     except OSError:
         return _result(
@@ -548,9 +837,10 @@ def _probe_unity_host_connectivity(
             unity_cli_version=unity_cli_version,
             verdict="CLI_UNAVAILABLE",
             reason="UNITY_CLI_LAUNCH_FAILED",
-            diagnosis=_diagnosis(process_observation, pipeline_diagnostic),
+            diagnosis=_diagnosis(process_observation, pipeline_diagnostic, pipeline_handshake=pipeline_handshake),
             process_observation=process_observation,
             pipeline_diagnostic=pipeline_diagnostic,
+            pipeline_handshake=pipeline_handshake,
         )
 
     exit_code = getattr(status_result, "returncode", 1)
@@ -569,9 +859,10 @@ def _probe_unity_host_connectivity(
             unity_status_exit_code=exit_code,
             verdict="STATUS_FAILED",
             reason="UNITY_STATUS_FAILED",
-            diagnosis=_diagnosis(process_observation, pipeline_diagnostic),
+            diagnosis=_diagnosis(process_observation, pipeline_diagnostic, pipeline_handshake=pipeline_handshake),
             process_observation=process_observation,
             pipeline_diagnostic=pipeline_diagnostic,
+            pipeline_handshake=pipeline_handshake,
         )
 
     raw_output = getattr(status_result, "stdout", "")
@@ -591,9 +882,10 @@ def _probe_unity_host_connectivity(
             unity_status_exit_code=exit_code,
             verdict="STATUS_FAILED",
             reason="UNITY_STATUS_RESPONSE_INVALID",
-            diagnosis=_diagnosis(process_observation, pipeline_diagnostic),
+            diagnosis=_diagnosis(process_observation, pipeline_diagnostic, pipeline_handshake=pipeline_handshake),
             process_observation=process_observation,
             pipeline_diagnostic=pipeline_diagnostic,
+            pipeline_handshake=pipeline_handshake,
         )
 
     raw_instances = payload.get("instances", [])
@@ -606,9 +898,10 @@ def _probe_unity_host_connectivity(
             success=payload["success"],
             verdict="STATUS_FAILED",
             reason="UNITY_STATUS_RESPONSE_INVALID",
-            diagnosis=_diagnosis(process_observation, pipeline_diagnostic),
+            diagnosis=_diagnosis(process_observation, pipeline_diagnostic, pipeline_handshake=pipeline_handshake),
             process_observation=process_observation,
             pipeline_diagnostic=pipeline_diagnostic,
+            pipeline_handshake=pipeline_handshake,
         )
 
     instance_objects = [item for item in raw_instances if isinstance(item, dict)]
@@ -630,9 +923,10 @@ def _probe_unity_host_connectivity(
             instances=safe_instances,
             verdict="STATUS_FAILED",
             reason="UNITY_STATUS_REPORTED_FAILURE",
-            diagnosis=_diagnosis(process_observation, pipeline_diagnostic),
+            diagnosis=_diagnosis(process_observation, pipeline_diagnostic, pipeline_handshake=pipeline_handshake),
             process_observation=process_observation,
             pipeline_diagnostic=pipeline_diagnostic,
+            pipeline_handshake=pipeline_handshake,
         )
 
     if matching_instance is not None:
@@ -661,9 +955,11 @@ def _probe_unity_host_connectivity(
             status_success=True,
             instance_count=instance_count,
             direct_match=matching_instance is not None,
+            pipeline_handshake=pipeline_handshake,
         ),
         process_observation=process_observation,
         pipeline_diagnostic=pipeline_diagnostic,
+        pipeline_handshake=pipeline_handshake,
     )
 
 

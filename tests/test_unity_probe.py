@@ -28,10 +28,16 @@ HOST_ENV = {
 
 
 class QueueRunner:
-    def __init__(self, results, *, pipeline_results=None):
+    def __init__(self, results, *, pipeline_results=None, handshake_results=None):
         self.results = list(results)
         self.pipeline_results = list(pipeline_results or [
             completed([], stdout=json.dumps({"success": True, "pipelines": []}))
+        ])
+        self.handshake_results = list(handshake_results or [
+            completed([], code=1, stdout=json.dumps({
+                "success": False,
+                "errors": [{"code": "NO_CONNECTED_EDITOR", "message": "not returned"}],
+            }))
         ])
         self.calls: list[tuple[list[str], dict[str, object]]] = []
 
@@ -39,6 +45,8 @@ class QueueRunner:
         self.calls.append((list(command), kwargs))
         if len(command) > 1 and command[1] == "pipeline":
             result = self.pipeline_results.pop(0)
+        elif len(command) > 1 and command[1] == "list":
+            result = self.handshake_results.pop(0)
         else:
             result = self.results.pop(0)
         if isinstance(result, BaseException):
@@ -105,6 +113,10 @@ class UnityProbeTests(unittest.TestCase):
             str(PREFERRED_UNITY_CLI), "pipeline", "list", "--format", "json", "--no-banner", "--non-interactive"
         ])
         self.assertEqual(runner.calls[2][0], [
+            str(PREFERRED_UNITY_CLI), "list", "--project-path", T008_PROJECT_PATH,
+            "--format", "json", "--no-banner", "--non-interactive"
+        ])
+        self.assertEqual(runner.calls[3][0], [
             str(PREFERRED_UNITY_CLI), "status", "--format", "json", "--no-banner", "--non-interactive"
         ])
         self.assertTrue(all(call[1]["timeout"] == 8 for call in runner.calls))
@@ -209,6 +221,7 @@ class UnityProbeTests(unittest.TestCase):
             "status", "hostUser", "userProfile", "localAppData", "appData", "unityCliPath",
             "unityCliVersion", "unityStatusExitCode", "success", "instanceCount", "instances",
             "verdict", "diagnosis", "editorProcessPresent", "editorProcessIds", "pipelineDiagnostic",
+            "pipelineHandshake",
         })
         self.assertEqual(set(result["instances"][0]), {
             "state", "projectPath", "editorVersion", "pid", "pipelinePort",
@@ -282,6 +295,194 @@ class UnityProbeTests(unittest.TestCase):
         self.assertTrue(result["pipelineDiagnostic"]["compiling"])
         self.assertNotIn("never-return-this", json.dumps(result))
 
+    def test_documented_pipeline_summary_safe_mode_shape_is_parsed(self):
+        runner = QueueRunner(
+            [
+                completed([], stdout="1.0.0-beta.9"),
+                completed([], stdout=json.dumps({"success": True, "instances": []})),
+            ],
+            pipeline_results=[completed([], stdout=json.dumps({
+                "success": True,
+                "data": {
+                    "summary": {"instancesInSafeMode": 2},
+                    "instances": [{
+                        "projectPath": T008_PROJECT_PATH,
+                        "pid": 5352,
+                        "pipelineStatus": "connected",
+                        "packageStatus": "ready",
+                    }],
+                },
+            }))],
+        )
+
+        result = probe(runner)
+
+        self.assertEqual(result["pipelineDiagnostic"]["candidateCount"], 1)
+        self.assertEqual(result["pipelineDiagnostic"]["instancesInSafeMode"], 2)
+        self.assertTrue(result["pipelineDiagnostic"]["safeMode"])
+        self.assertEqual(result["pipelineDiagnostic"]["targetVisible"], True)
+        self.assertEqual(result["pipelineDiagnostic"]["instances"], [{
+            "projectPath": T008_PROJECT_PATH,
+            "pid": 5352,
+            "pipelineStatus": "connected",
+            "packageStatus": "ready",
+        }])
+
+    def test_documented_per_instance_safe_mode_shape_is_parsed(self):
+        runner = QueueRunner(
+            [
+                completed([], stdout="1.0.0-beta.9"),
+                completed([], stdout=json.dumps({"success": True, "instances": []})),
+            ],
+            pipeline_results=[completed([], stdout=json.dumps({
+                "success": True,
+                "data": {
+                    "summary": {"instancesInSafeMode": 0},
+                    "instances": [{
+                        "project": T008_PROJECT_PATH,
+                        "safeMode": {"detected": True},
+                    }],
+                },
+            }))],
+        )
+
+        result = probe(runner)
+
+        self.assertTrue(result["pipelineDiagnostic"]["safeMode"])
+        self.assertEqual(result["pipelineDiagnostic"]["instances"], [{
+            "projectPath": T008_PROJECT_PATH,
+            "safeModeDetected": True,
+        }])
+
+    def test_list_catalog_handshake_connects_when_status_is_empty_without_exposing_catalog(self):
+        runner = QueueRunner(
+            [
+                completed([], stdout="1.0.0-beta.9"),
+                completed([], stdout=json.dumps({"success": True, "instances": []})),
+            ],
+            handshake_results=[completed([], stdout=json.dumps({
+                "success": True,
+                "data": {
+                    "projectPath": T008_PROJECT_PATH,
+                    "tools": [{
+                        "name": "secret-command-name",
+                        "description": "secret tool description",
+                        "inputSchema": {"type": "object", "properties": {"secret": {"type": "string"}}},
+                        "accessToken": "secret-catalog-token",
+                    }],
+                },
+            }))],
+        )
+
+        result = probe(runner)
+
+        self.assertEqual(result["verdict"], "NO_INSTANCE")
+        self.assertEqual(result["pipelineHandshake"], {
+            "state": "CONNECTED",
+            "exitCode": 0,
+            "success": True,
+            "catalogValid": True,
+            "toolCount": 1,
+            "projectPath": T008_PROJECT_PATH,
+            "errorCodes": [],
+        })
+        self.assertEqual(result["diagnosis"], "HOST_PIPELINE_CONNECTED")
+        serialized = json.dumps(result)
+        for secret in ("secret-command-name", "secret tool description", "inputSchema", "secret-catalog-token"):
+            self.assertNotIn(secret, serialized)
+
+    def test_list_failure_with_safe_mode_is_classified_as_safe_mode(self):
+        runner = QueueRunner(
+            [
+                completed([], stdout="1.0.0-beta.9"),
+                completed([], stdout=json.dumps({"success": True, "instances": []})),
+            ],
+            pipeline_results=[completed([], stdout=json.dumps({
+                "success": True,
+                "data": {
+                    "summary": {"instancesInSafeMode": 1},
+                    "instances": [{"safeMode": {"detected": True}}],
+                },
+            }))],
+            handshake_results=[completed([], code=5, stdout=json.dumps({
+                "success": False,
+                "errors": [{"code": "PIPELINE_SAFE_MODE", "message": "never returned"}],
+            }))],
+        )
+
+        result = probe(runner)
+
+        self.assertEqual(result["pipelineHandshake"]["state"], "SAFE_MODE")
+        self.assertEqual(result["pipelineHandshake"]["errorCodes"], ["PIPELINE_SAFE_MODE"])
+        self.assertEqual(result["diagnosis"], "SAFE_MODE_OR_PIPELINE_UNAVAILABLE")
+        self.assertNotIn("never returned", json.dumps(result))
+
+    def test_list_failure_with_visible_target_and_editor_is_handshake_failure(self):
+        runner = QueueRunner(
+            [
+                completed([], stdout="1.0.0-beta.9"),
+                completed([], stdout=json.dumps({"success": True, "instances": []})),
+            ],
+            pipeline_results=[completed([], stdout=json.dumps({
+                "success": True,
+                "data": {"instances": [{"projectPath": T008_PROJECT_PATH, "pid": 5352, "state": "ready"}]},
+            }))],
+            handshake_results=[completed([], code=7, stdout=json.dumps({
+                "success": False,
+                "errors": [{"code": "PIPELINE_UNAVAILABLE"}],
+            }))],
+        )
+
+        result = probe(
+            runner,
+            process_observer=lambda: {"present": True, "pids": [5352], "complete": True},
+        )
+
+        self.assertEqual(result["pipelineHandshake"]["state"], "NOT_CONNECTED")
+        self.assertEqual(result["diagnosis"], "PIPELINE_VISIBLE_HANDSHAKE_FAILED")
+
+    def test_direct_match_verdict_remains_while_failed_pipeline_handshake_is_diagnosed(self):
+        runner = QueueRunner(
+            [
+                completed([], stdout="1.0.0-beta.9"),
+                completed([], stdout=json.dumps({"success": True, "instances": [{
+                    "state": "ready",
+                    "projectPath": T008_PROJECT_PATH,
+                    "editorVersion": T008_EDITOR_VERSION,
+                    "pid": 5352,
+                }]})),
+            ],
+            pipeline_results=[completed([], stdout=json.dumps({
+                "success": True,
+                "data": {"instances": [{"projectPath": T008_PROJECT_PATH, "pid": 5352}]},
+            }))],
+        )
+
+        result = probe(
+            runner,
+            process_observer=lambda: {"present": True, "pids": [5352], "complete": True},
+        )
+
+        self.assertEqual(result["verdict"], "DIRECT_MATCH")
+        self.assertEqual(result["pipelineHandshake"]["state"], "NOT_CONNECTED")
+        self.assertEqual(result["diagnosis"], "PIPELINE_VISIBLE_HANDSHAKE_FAILED")
+
+    def test_list_timeout_is_bounded_and_does_not_return_cli_payload(self):
+        runner = QueueRunner(
+            [
+                completed([], stdout="1.0.0-beta.9"),
+                completed([], stdout=json.dumps({"success": True, "instances": []})),
+            ],
+            handshake_results=[subprocess.TimeoutExpired("unity list", 8)],
+        )
+
+        result = probe(runner)
+
+        self.assertEqual(result["pipelineHandshake"]["state"], "UNRESOLVED")
+        self.assertEqual(result["pipelineHandshake"]["error"], "UNITY_LIST_TIMEOUT")
+        self.assertEqual(result["diagnosis"], "EDITOR_PROCESS_ABSENT")
+        self.assertNotIn("TimeoutExpired", json.dumps(result))
+
     def test_process_observation_allowlists_pids_and_never_returns_command_lines(self):
         runner = QueueRunner([
             completed([], stdout="1.0.0-beta.9"),
@@ -318,8 +519,8 @@ class UnityProbeTests(unittest.TestCase):
 
         self.assertEqual(result["diagnosis"], "DIAGNOSTIC_UNRESOLVED")
         self.assertEqual(result["pipelineDiagnostic"]["error"], "UNITY_PIPELINE_TIMEOUT")
-        self.assertEqual(len(runner.calls), 3)
-        self.assertEqual(runner.calls[2][0][1], "status")
+        self.assertEqual(len(runner.calls), 4)
+        self.assertEqual(runner.calls[3][0][1], "status")
         self.assertTrue(all(call[1]["timeout"] == 8 for call in runner.calls))
         self.assertTrue(all(call[1]["shell"] is False for call in runner.calls))
 
