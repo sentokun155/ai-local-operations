@@ -2,6 +2,7 @@ from mcp.server import MCPServer
 from local_mcp.dispatch import dispatch_task
 from local_mcp.finalize import finalize_task, recover_worker
 from local_mcp.production import prepare_runtime
+from local_mcp.unity_probe import probe_unity_host_connectivity as _probe_unity_host_connectivity
 from local_mcp.worker_pool import WorkerPool, WorkerPoolConfig, WorkerPoolError, default_state_path
 
 mcp = MCPServer("local-operations")
@@ -107,6 +108,12 @@ def recover_quarantined_worker(worker_id: str) -> dict[str, object]:
 def prepare_production_runtime(branch: str) -> dict[str, object]:
     """Prepare the fixed Production checkout on the requested branch and verify readiness."""
     return prepare_runtime(branch)
+
+
+@mcp.tool()
+def probe_unity_host_connectivity() -> dict[str, object]:
+    """Read-only probe for the Unity Editor visible to the Local Operations Host process."""
+    return _probe_unity_host_connectivity()
 
 
 if __name__ == "__main__":
