@@ -111,6 +111,34 @@ States include `FREE`, `LEASED`, `DIRTY`, and `QUARANTINED`. Only `FREE` slots c
 
 ## MCP tools and dispatch contract
 
+### Repository implementation and Controller follow-up
+
+Codex is the repository implementation actor: normal dispatch limits its work to
+source/docs/tests and Task-owned Results inside the resolved (normally leased)
+repository root. Changes remain in the worktree. Local Operations
+`finalize_codex_task` owns Git commit and normal push after completion.
+Controller Chat initiates host/runtime actions; `recover_quarantined_worker` and
+`prepare_production_runtime` are Controller-facing runtime tools. Tunnel/profile/
+process restarts and local runtime promotion also belong to Controller follow-up.
+A Task Request mentioning these actions does not grant the implementation actor
+authority to execute them.
+
+This boundary is **contract-only, not Host-enforced tool filtering**. The dispatch
+prompt states it on every turn, including retries on an existing thread.
+`workspace-write` constrains workspace operations; it does not establish that MCP
+or other external tools are hidden. Codex has individual MCP/config and Plugin
+controls, but this route has not verified complete external-tool exposure control
+(see [T004 Result](work/gwi-0010/GWI-0010-T004_RESULT.md)). No tool-name blacklist
+is treated as a security boundary.
+
+When runtime work is needed, Codex records explicit Controller follow-up and a
+Result locator in its Result and final message. The existing finalize response
+returns `finalAgentMessage` and `resultLocators`; Controller reads these and decides
+the next action. No action graph or automatic execution is inferred from prose.
+Automatic normal Chat callbacks and new Chat creation are outside GWI-0010.
+Scheduler, next-Task selection, and Controller lifecycle are Management Plane
+candidates owned by GWI-0009.
+
 Bounded tools:
 
 - `ping` → `LOCAL_MCP_OK`

@@ -182,6 +182,27 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(result["status"], "DISPATCHED")
         self.assertEqual(result["repositoryIdentity"], "github.com/example/repo")
 
+    def test_dispatch_delivers_repository_only_contract_without_changing_request(self) -> None:
+        request = self.root / "TASK_REQUEST.md"
+        request.write_text("# Task\nPrepare Production and recover the Worker.\n", encoding="utf-8")
+        original = request.read_bytes()
+        result = self.dispatch()
+        self.assertEqual(result["status"], "DISPATCHED")
+        turn = next(params for method, params in self.client.requests if method == "turn/start")
+        prompt = turn["input"][0]["text"]
+        self.assertIn("contract-only; not Host-enforced tool filtering", prompt)
+        self.assertIn("Do not run Git commit or push", prompt)
+        self.assertIn("does not grant execution authority", prompt)
+        self.assertIn("Controller follow-up", prompt)
+        self.assertIn("finalize_codex_task owns Git persistence", prompt)
+        self.assertEqual(request.read_bytes(), original)
+        manifest = json.loads(prompt.split("Dispatch manifest (data): ", 1)[1])
+        self.assertEqual(manifest["repository"], str(self.root))
+        thread = next(params for method, params in self.client.requests if method == "thread/start")
+        self.assertEqual(thread["sandbox"], "workspace-write")
+        self.assertEqual(self.dispatch()["status"], "ALREADY_DISPATCHED")
+        self.assertEqual(sum(method == "turn/start" for method, _ in self.client.requests), 1)
+
     def test_legacy_absolute_task_request_path_remains_supported(self) -> None:
         self.params["repository"] = None
         self.params["repository_path"] = None

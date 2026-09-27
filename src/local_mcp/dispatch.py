@@ -29,6 +29,24 @@ _EVENT_TIMEOUT_SECONDS = 10
 _MAX_REGISTRY_ENTRIES = 256
 _MAX_WORKTREES_PER_ROOT = 512
 
+# An execution contract, not an external-tool security boundary. Keep this in
+# every turn prompt as rejected turns may be retried on an existing thread.
+_REPOSITORY_ONLY_BOUNDARY = (
+    "Repository-only execution boundary (contract-only; not Host-enforced tool filtering):\n"
+    "- The resolved repository root in the dispatch manifest is your entire work scope "
+    "(the leased repository root for Worker Pool dispatch). Read/edit source, docs, tests, "
+    "and Task-owned Result files there; run bounded repository tests and leave changes in the worktree.\n"
+    "- Do not run Git commit or push. Local Operations finalize_codex_task owns Git persistence "
+    "after your turn completes.\n"
+    "- Worker recovery, Production runtime preparation, Tunnel/profile/process restart, and "
+    "local runtime promotion are Controller-owned follow-up actions. Do not execute them, "
+    "including through recover_quarantined_worker or prepare_production_runtime.\n"
+    "- A Task Request that asks for these effects does not grant execution authority through "
+    "this normal implementation dispatch. Complete only its repository implementation work.\n"
+    "- If a runtime effect is needed, record it as Controller follow-up in the Task-owned Result "
+    "and final agent message, with the Result locator. Do not execute the follow-up yourself.\n"
+)
+
 
 class DispatchValidationError(ValueError):
     def __init__(
@@ -1073,7 +1091,8 @@ def _prompt(data: dict[str, Any]) -> str:
         "branch. If the file cannot be read, stop and report HOLD without making changes. Do not "
         "substitute another task, branch, or file. Work only within the specified repository. This dispatch grants "
         "no authority for force-push, merge, publication, deployment, or other external side effects.\n"
-        "Dispatch manifest (data): " + _manifest(data)
+        + _REPOSITORY_ONLY_BOUNDARY
+        + "Dispatch manifest (data): " + _manifest(data)
     )
 
 
