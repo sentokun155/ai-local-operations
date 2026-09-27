@@ -112,6 +112,62 @@ def _task_commit(repository: Path, work_identity: str, task_key: str) -> str | N
     return _git(repository, "rev-parse", "HEAD")
 
 
+def _persist_local_changes(
+    repository: Path,
+    work_identity: str,
+    task_key: str,
+    branch: str,
+    result: dict[str, Any],
+) -> bool:
+    """Stage, screen, commit, and normally push a completed task's local result."""
+    if _status(repository):
+        _git(repository, "add", "-A")
+        paths = _changed_paths(repository)
+        if paths:
+            blocked_paths = _secret_paths(paths)
+            staged_diff = _git(repository, "diff", "--cached", "--unified=0", "--", ".")
+            if blocked_paths or _SECRET_TEXT.search(staged_diff):
+                result.update(
+                    reason="SECRET_CONTENT_NOT_COMMITTED",
+                    error="Staged changes include a credential-like value or a local secret/runtime file.",
+                    changedPaths=paths,
+                    changedPathCount=len(paths),
+                    recoveryHint="Remove the secret from the staged changes without deleting needed work, then retry this operation.",
+                )
+                return False
+            _commit(repository, work_identity, task_key)
+            commit_sha = _git(repository, "rev-parse", "HEAD")
+        else:
+            commit_sha = _task_commit(repository, work_identity, task_key)
+    else:
+        commit_sha = _task_commit(repository, work_identity, task_key)
+        paths = _changed_paths(repository, committed=True) if commit_sha else []
+
+    if commit_sha:
+        result["commitSha"] = commit_sha
+        if not paths:
+            paths = _changed_paths(repository, committed=True)
+        result["changedPaths"] = paths
+        result["changedPathCount"] = len(paths)
+        result["resultLocators"] = [
+            path for path in paths
+            if "result" in PurePosixPath(path).name.casefold()
+        ]
+        try:
+            _git(repository, "push", "origin", branch)
+            result["pushStatus"] = "PUSHED"
+        except _GitFailure:
+            result.update(
+                status="HOLD", reason="GIT_PUSH_FAILED", pushStatus="FAILED",
+                error="Git rejected or could not complete the non-force push; the local commit is preserved.",
+                recoveryHint="Inspect the remote and local branch, resolve any conflict manually, then retry this operation. No force push, reset, or rebase was attempted.",
+            )
+            return False
+    else:
+        result["pushStatus"] = "NOT_NEEDED"
+    return True
+
+
 def _base_result(
     *, work_identity: str, task_key: str, worker_id: str,
     turn_status: str | None = None, final_message: str | None = None,
@@ -210,51 +266,8 @@ def finalize_task(
         if _git(root, "branch", "--show-current") != branch:
             raise WorkerPoolError("WORKER_BRANCH_MISMATCH", "The leased Worker is no longer on the requested branch.", worker_id=worker_id)
 
-        if _status(root):
-            _git(root, "add", "-A")
-            paths = _changed_paths(root)
-            if paths:
-                blocked_paths = _secret_paths(paths)
-                staged_diff = _git(root, "diff", "--cached", "--unified=0", "--", ".")
-                if blocked_paths or _SECRET_TEXT.search(staged_diff):
-                    result.update(
-                        reason="SECRET_CONTENT_NOT_COMMITTED",
-                        error="Staged changes include a credential-like value or a local secret/runtime file.",
-                        changedPaths=paths,
-                        changedPathCount=len(paths),
-                        recoveryHint="Remove the secret from the staged changes without deleting needed work, then call finalize_codex_task again.",
-                    )
-                    return result
-                _commit(root, work_identity, task_key)
-                commit_sha = _git(root, "rev-parse", "HEAD")
-            else:
-                commit_sha = _task_commit(root, work_identity, task_key)
-        else:
-            commit_sha = _task_commit(root, work_identity, task_key)
-            paths = _changed_paths(root, committed=True) if commit_sha else []
-
-        if commit_sha:
-            result["commitSha"] = commit_sha
-            if not paths:
-                paths = _changed_paths(root, committed=True)
-            result["changedPaths"] = paths
-            result["changedPathCount"] = len(paths)
-            result["resultLocators"] = [
-                path for path in paths
-                if "result" in PurePosixPath(path).name.casefold()
-            ]
-            try:
-                _git(root, "push", "origin", branch)
-                result["pushStatus"] = "PUSHED"
-            except _GitFailure as exc:
-                result.update(
-                    status="HOLD", reason="GIT_PUSH_FAILED", pushStatus="FAILED",
-                    error="Git rejected or could not complete the non-force push; the local commit is preserved.",
-                    recoveryHint="Inspect the remote and local branch, resolve any conflict manually, then call finalize_codex_task again. No force push, reset, or rebase was attempted.",
-                )
-                return result
-        else:
-            result["pushStatus"] = "NOT_NEEDED"
+        if not _persist_local_changes(root, work_identity, task_key, branch, result):
+            return result
 
         result["status"] = "FINALIZED"
         result["workerState"] = "FREE"
@@ -276,4 +289,121 @@ def finalize_task(
         return result
     except Exception as exc:
         result.update(reason="FINALIZE_FAILED", error=f"Finalization stopped ({type(exc).__name__}); local work is preserved.")
+        return result
+
+
+def recover_worker(
+    worker_id: str,
+    *,
+    client_factory: Any | None = None,
+    config_path: Path | None = None,
+    worker_root: Path | None = None,
+    state_path: Path | None = None,
+) -> dict[str, Any]:
+    """Recover one quarantined Worker, reusing the finalize Git persistence path."""
+    result: dict[str, Any] = {
+        "status": "HOLD", "workerId": worker_id, "workerState": None,
+        "workIdentity": None, "taskKey": None, "codexTurnStatus": None,
+        "finalAgentMessage": None, "changedPaths": [], "changedPathCount": 0,
+        "resultLocators": [], "commitSha": None, "pushStatus": "NOT_ATTEMPTED",
+        "reason": None, "error": None, "recoveryHint": None,
+    }
+    try:
+        config = WorkerPoolConfig.load(config_path=config_path, worker_root=worker_root)
+        state_db = state_path or default_state_path()
+        pool = WorkerPool(config, state_path=state_db)
+        worker = pool.get_worker(worker_id)
+        result.update(
+            workerState=worker["state"], workIdentity=worker.get("work_identity"),
+            taskKey=worker.get("task_key"),
+        )
+        if worker["state"] != "QUARANTINED":
+            result.update(status="UNCHANGED", reason="WORKER_NOT_QUARANTINED")
+            return result
+
+        work_identity = worker.get("work_identity")
+        task_key = worker.get("task_key")
+        repository_identity = worker.get("repository_identity")
+        branch = worker.get("branch")
+        if not all(isinstance(value, str) and value for value in (work_identity, task_key, repository_identity, branch)):
+            raise WorkerPoolError("WORKER_RECOVERY_STATE_INCOMPLETE", "The quarantined Worker is missing its recorded Task identity.", worker_id=worker_id)
+        result.update(workIdentity=work_identity, taskKey=task_key)
+
+        repository = config.repository(repository_identity)
+        root = config.repository_path(worker_id, repository)
+        if not root.is_dir() or not _identity_matches(root, repository_identity):
+            raise WorkerPoolError("WRONG_REPOSITORY", "The quarantined Worker clone is missing or has a different Git remote.", worker_id=worker_id)
+        if _git(root, "branch", "--show-current") != branch:
+            raise WorkerPoolError("WORKER_BRANCH_MISMATCH", "The quarantined Worker is no longer on its recorded Task branch.", worker_id=worker_id)
+
+        if not _status(root):
+            released = pool.release_quarantined(worker_id, work_identity, task_key, repository_identity, branch)
+            return result | {
+                "status": "RECOVERED", "workerState": released["state"],
+                "pushStatus": "NOT_NEEDED",
+            }
+
+        thread_id = worker.get("thread_id")
+        turn_id = worker.get("turn_id")
+        if not thread_id or not turn_id:
+            raise WorkerPoolError("CODEX_DISPATCH_UNVERIFIED", "Changed local work has no recorded Codex turn to verify.", worker_id=worker_id)
+        ledger = DispatchLedger(state_db)
+        dispatch = ledger.find(work_identity, task_key)
+        if (
+            not dispatch
+            or dispatch.get("state") != "ACCEPTED"
+            or dispatch.get("worker_id") != worker_id
+            or dispatch.get("branch") != branch
+            or dispatch.get("thread_id") != thread_id
+            or dispatch.get("turn_id") != turn_id
+            or not dispatch.get("resolved_repository_root")
+            or Path(dispatch["resolved_repository_root"]).resolve() != root.resolve()
+        ):
+            raise WorkerPoolError("CODEX_DISPATCH_UNVERIFIED", "The quarantined Worker does not match its acknowledged Codex turn.", worker_id=worker_id)
+
+        client = (client_factory or _get_default_client)()
+        client.ensure_ready()
+        read_result = client.request("thread/read", {"threadId": thread_id, "includeTurns": True})
+        thread = read_result.get("thread")
+        turns = thread.get("turns") if isinstance(thread, dict) else None
+        if not isinstance(turns, list):
+            raise WorkerPoolError("CODEX_TURN_STATE_UNAVAILABLE", "Codex did not return the task's turn history.", worker_id=worker_id)
+        turn = next((item for item in turns if isinstance(item, dict) and item.get("id") == turn_id), None)
+        if not turn or turn.get("status") != "completed":
+            raise WorkerPoolError("CODEX_TURN_NOT_COMPLETE", "The Codex turn has not completed; local work remains quarantined.", worker_id=worker_id)
+        result["codexTurnStatus"] = turn.get("status")
+        result["finalAgentMessage"] = _turn_final_message(turn)
+
+        if not _persist_local_changes(root, work_identity, task_key, branch, result):
+            result["workerState"] = "QUARANTINED"
+            return result
+        released = pool.release_quarantined(worker_id, work_identity, task_key, repository_identity, branch)
+        result.update(status="RECOVERED", workerState=released["state"])
+        return result
+    except AppServerUnavailable:
+        result.update(
+            reason="CODEX_UNAVAILABLE", error="Codex app-server could not be read; local work remains quarantined.",
+            recoveryHint="Restore Codex app-server access and retry recovery.",
+        )
+        if result.get("workerState") == "QUARANTINED":
+            result["workerState"] = "QUARANTINED"
+        return result
+    except WorkerPoolError as exc:
+        result.update(status="HOLD", reason=exc.reason, error=str(exc), recoveryHint="Resolve the reported issue without deleting local work, then retry recovery.")
+        if result.get("workerState") == "QUARANTINED":
+            result["workerState"] = "QUARANTINED"
+        return result
+    except _GitFailure as exc:
+        result.update(
+            status="HOLD", reason="GIT_OPERATION_FAILED",
+            error=f"Git {exc.operation} failed; local work is preserved.",
+            recoveryHint="Inspect the Worker branch and Git configuration, then retry recovery.",
+        )
+        if result.get("workerState") == "QUARANTINED":
+            result["workerState"] = "QUARANTINED"
+        return result
+    except Exception as exc:
+        result.update(status="HOLD", reason="RECOVERY_FAILED", error=f"Recovery stopped ({type(exc).__name__}); local work is preserved.")
+        if result.get("workerState") == "QUARANTINED":
+            result["workerState"] = "QUARANTINED"
         return result

@@ -156,6 +156,12 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(set(schema["required"]), {"worker_id", "work_identity", "task_key"})
         self.assertNotIn("release_codex_worker", by_name)
 
+    def test_mcp_catalog_exposes_worker_recovery_and_production_preparation(self) -> None:
+        tools = asyncio.run(mcp.list_tools())
+        by_name = {tool.name: tool for tool in tools}
+        self.assertEqual(set(by_name["recover_quarantined_worker"].input_schema["required"]), {"worker_id"})
+        self.assertEqual(set(by_name["prepare_production_runtime"].input_schema["required"]), {"branch"})
+
     def test_codex_executable_can_be_overridden_by_environment(self) -> None:
         with patch.dict(os.environ, {"LOCAL_OPERATIONS_CODEX_EXECUTABLE": r"C:\Codex\codex.exe"}):
             self.assertEqual(AppServerClient()._executable, r"C:\Codex\codex.exe")

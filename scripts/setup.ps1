@@ -16,7 +16,6 @@ if ($script:RuntimeRepositoryRoot -ne $script:DevRoot) {
 }
 if ((Get-RepositoryIdentity $script:DevRoot) -ne "sentokun155/ai-local-operations") { throw "Development checkout identityが一致しません。" }
 if ((Get-RepositoryIdentity $script:ProdRoot) -ne "sentokun155/ai-local-operations") { throw "Production checkout identityが一致しません。" }
-if ((& git -C $script:ProdRoot branch --show-current) -ne "main") { throw "Production checkoutはmainである必要があります。変更していません。" }
 if (-not (Test-Path (Join-Path $script:DevRoot "pyproject.toml")) -or -not (Test-Path (Join-Path $script:DevRoot "server.py"))) {
     throw "Development runtimeにpyproject.tomlまたはserver.pyがありません。"
 }
@@ -30,7 +29,7 @@ $env:CONTROL_PLANE_API_KEY = $key
 & uv --directory $script:DevRoot run --locked python -c "import mcp; print('Development MCP dependencies: PASS')"
 if ($LASTEXITCODE -ne 0) { throw "Development MCP dependenciesを確認できません。" }
 if (-not (Test-Path (Join-Path $script:ProdRoot "server.py"))) {
-    Write-Warning "Production mainにLocal Operations runtime sourceがありません。Candidateは反映せず、accepted runtimeが用意されるまでProductionは起動できません。"
+    Write-Warning "Production checkoutにLocal Operations runtime sourceがありません。起動前に使用するbranchを確認してください。"
 }
 
 if ($ConfigureProfiles) {

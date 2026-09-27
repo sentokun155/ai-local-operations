@@ -1,6 +1,7 @@
 from mcp.server import MCPServer
 from local_mcp.dispatch import dispatch_task
-from local_mcp.finalize import finalize_task
+from local_mcp.finalize import finalize_task, recover_worker
+from local_mcp.production import prepare_runtime
 from local_mcp.worker_pool import WorkerPool, WorkerPoolConfig, WorkerPoolError, default_state_path
 
 mcp = MCPServer("local-operations")
@@ -94,6 +95,18 @@ def finalize_codex_task(worker_id: str, work_identity: str, task_key: str) -> di
         "work_identity": work_identity,
         "task_key": task_key,
     })
+
+
+@mcp.tool()
+def recover_quarantined_worker(worker_id: str) -> dict[str, object]:
+    """Preserve completed local work and return one quarantined Worker to service."""
+    return recover_worker(worker_id)
+
+
+@mcp.tool()
+def prepare_production_runtime(branch: str) -> dict[str, object]:
+    """Prepare the fixed Production checkout on the requested branch and verify readiness."""
+    return prepare_runtime(branch)
 
 
 if __name__ == "__main__":

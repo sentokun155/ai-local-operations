@@ -266,6 +266,15 @@ class WorkerPool:
             rows = connection.execute("SELECT * FROM workers ORDER BY worker_id").fetchall()
         return [dict(row) for row in rows]
 
+    def get_worker(self, worker_id: str) -> dict[str, Any]:
+        if worker_id not in self.config.worker_ids():
+            raise WorkerPoolError("WORKER_NOT_FOUND", "Worker identity is not configured.", worker_id=worker_id)
+        with closing(self._connect()) as connection:
+            row = connection.execute("SELECT * FROM workers WHERE worker_id=?", (worker_id,)).fetchone()
+        if row is None:
+            raise WorkerPoolError("WORKER_NOT_FOUND", "Worker identity is not configured.", worker_id=worker_id)
+        return dict(row)
+
     def get_lease(self, worker_id: str, work_identity: str, task_key: str) -> dict[str, Any] | None:
         with closing(self._connect()) as connection:
             row = connection.execute(
@@ -440,6 +449,46 @@ class WorkerPool:
             if cursor.rowcount != 1:
                 connection.rollback()
                 raise WorkerPoolError("WORKER_LEASE_NOT_FOUND", "The matching Worker lease changed during release.", worker_id=worker_id)
+            connection.commit()
+        return {"workerId": worker_id, "state": "FREE", "releasedTaskKey": task_key}
+
+    def release_quarantined(
+        self,
+        worker_id: str,
+        work_identity: str,
+        task_key: str,
+        repository_identity: str,
+        branch: str,
+    ) -> dict[str, Any]:
+        worker = self.get_worker(worker_id)
+        if (
+            worker.get("state") != "QUARANTINED"
+            or worker.get("work_identity") != work_identity
+            or worker.get("task_key") != task_key
+            or worker.get("repository_identity") != repository_identity
+            or worker.get("branch") != branch
+        ):
+            raise WorkerPoolError("WORKER_STATE_CHANGED", "The quarantined Worker state changed during recovery.", worker_id=worker_id)
+        repository = self.config.repository(repository_identity)
+        path = self.config.repository_path(worker_id, repository)
+        if not path.is_dir() or not _identity_matches(path, repository.identity):
+            raise WorkerPoolError("WORKER_REPOSITORY_UNAVAILABLE", "The quarantined Worker clone is missing or has the wrong remote.", worker_id=worker_id)
+        if _git(path, "branch", "--show-current") != branch:
+            raise WorkerPoolError("WORKER_BRANCH_MISMATCH", "The quarantined Worker is no longer on its recorded Task branch.", worker_id=worker_id)
+        if _status(path):
+            raise WorkerPoolError("WORKER_REPOSITORY_DIRTY", "The Task clone still has local changes; the Worker remains quarantined.", worker_id=worker_id)
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """UPDATE workers SET state='FREE',work_identity=NULL,task_key=NULL,repository_identity=NULL,
+                    branch=NULL,thread_id=NULL,turn_id=NULL,leased_at=NULL,updated_at=datetime('now'),failure_reason=NULL
+                   WHERE worker_id=? AND state='QUARANTINED' AND work_identity=? AND task_key=?
+                     AND repository_identity=? AND branch=?""",
+                (worker_id, work_identity, task_key, repository_identity, branch),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                raise WorkerPoolError("WORKER_STATE_CHANGED", "The quarantined Worker state changed during recovery.", worker_id=worker_id)
             connection.commit()
         return {"workerId": worker_id, "state": "FREE", "releasedTaskKey": task_key}
 

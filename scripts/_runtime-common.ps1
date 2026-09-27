@@ -109,7 +109,6 @@ function Sync-RuntimeBranch([string]$Root, [string]$ExpectedBranch, [switch]$Req
     $ahead = [int]$parts[0]
     $behind = [int]$parts[1]
     if ($ahead -gt 0 -and $behind -gt 0) { throw "runtime branchがremoteと分岐しています。更新を止めました。" }
-    if ($Root -eq $script:ProdRoot -and $ahead -gt 0) { throw "Production mainにremote未反映commitがあります。更新を止めました。" }
     if ($behind -gt 0) {
         & git -C $Root merge --ff-only "origin/$branch"
         if ($LASTEXITCODE -ne 0) { throw "runtime checkoutをfast-forwardできません。" }

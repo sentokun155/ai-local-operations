@@ -70,11 +70,9 @@ Setup validates runtime checkouts and local tools; it does not start either Tunn
 
 Replacing an existing profile requires the separate `-ReplaceExistingProfiles` switch. Setup writes only Tunnel profile configuration and the environment-variable reference; it never writes the API key value. Verify profiles with `tunnel-client doctor --profile local-operations-dev --explain` and `tunnel-client doctor --profile local-operations --explain`.
 
-T002 updates Development verification only. It does not start or update the Production runtime.
+`start-all.ps1` starts each environment independently, skips an already-running profile, and checks `/readyz`. A failure in one does not stop the other. `restart-dev.ps1` operates only on DevEnv and the Development profile; it allows a dirty development checkout and uses an ordinary fast-forward update if possible. A conflict stops the restart and preserves local edits. `prepare_production_runtime(branch)` prepares the fixed ProdEnv checkout on the requested branch, holds when that checkout has local changes, points the Production profile at ProdEnv, and restarts it after readiness checks. Production branch selection is not fixed to `main`; Worker leases do not block a Production restart. The scripts never use `reset --hard`, `clean`, force push, or branch deletion.
 
-`start-all.ps1` starts each environment independently, skips an already-running profile, and checks `/readyz`. A failure in one does not stop the other. `restart-dev.ps1` operates only on DevEnv and the Development profile; it allows a dirty development checkout and uses an ordinary fast-forward update if possible. A conflict stops the restart and preserves local edits. `restart-prod.ps1` operates only on ProdEnv and Production `main`, and requires its checkout to be clean. Restarts stop when a Worker lease is active. The scripts never use `reset --hard`, `clean`, force push, or branch deletion.
-
-Finalize completed Worker tasks before restarting. Legacy explicit-path tasks are not represented in the Worker Pool lease table and must also be checked in Codex. A Tunnel restart can stop its child MCP/app-server process.
+Restarting the Development Tunnel can stop its child MCP/app-server process. Production runtime restarts are independent of Worker leases.
 
 After changing MCP tool schemas, restart the corresponding Tunnel and refresh the connected Local Operations tool catalog in the client. A task can retain an older cached tool list; confirm the new schema in a fresh task if the current list stays stale.
 
@@ -109,7 +107,7 @@ The local SQLite file `%LOCALAPPDATA%\LocalOperations\dispatch-ledger.sqlite3` s
 
 States include `FREE`, `LEASED`, `DIRTY`, and `QUARANTINED`. Only `FREE` slots can be leased. PREPARE checks the selected clone's remote identity and local changes, fetches `origin`, then checks out or fast-forwards the requested branch. It does not inspect sibling clones or restore a default branch on release. A wrong remote, unknown branch, uncommitted local changes, or a branch that cannot be updated with a fast-forward stays visible for recovery; no local work is discarded. The app-server `cwd` is the selected target repository root.
 
-`finalize_codex_task` requires `worker_id`, `work_identity`, and `task_key`. It reads the exact dispatched turn and requires `completed`, stages non-ignored changes, blocks common credential files/values, commits with the Task identity, and pushes normally to `origin` on the requested branch. Push failure leaves the local commit and lease intact. With no changes, it returns the Result without making a commit. A clean target clone becomes `FREE` on its current branch; an unclean target remains leased. No force push, reset, rebase, default-branch restore, or remote revision readback is used.
+`finalize_codex_task` requires `worker_id`, `work_identity`, and `task_key`. It reads the exact dispatched turn and requires `completed`, stages non-ignored changes, blocks common credential files/values, commits with the Task identity, and pushes normally to `origin` on the requested branch. Push failure leaves the local commit and lease intact. With no changes, it returns the Result without making a commit. A clean target clone becomes `FREE` on its current branch; an unclean target remains leased. `recover_quarantined_worker(worker_id)` applies the same Git persistence checks to one quarantined Worker and leaves it quarantined when its turn is incomplete or persistence fails.
 
 ## MCP tools and dispatch contract
 
@@ -120,6 +118,8 @@ Bounded tools:
 - `dispatch_codex_task`
 - `get_worker_pool_status`
 - `finalize_codex_task`
+- `recover_quarantined_worker`
+- `prepare_production_runtime`
 
 Before migration, logical dispatch used a registered checkout or needed a local path. The normal fixed-pool route now takes only:
 
@@ -140,7 +140,7 @@ Dispatch validates the configured repository identity, requested branch, current
 
 `DISPATCHED` means the app-server acknowledged `turn/start`, not that the task completed. The receipt includes Worker ID, selected repository root for diagnosis, thread/turn IDs, and informational commit/blob values. Repeating `work_identity + task_key` returns the accepted receipt without another turn. Uncertain outcomes block a second task. Explicit turn rejection can retry on its existing thread and keeps the Worker leased.
 
-`get_worker_pool_status` reports configured slot state without clone contents or credentials. After Codex completes, `finalize_codex_task` returns the final agent message, changed paths, commit SHA when present, and push status, then frees a clean Worker. It does not send an automatic callback to an existing ChatGPT chat.
+`get_worker_pool_status` reports configured slot state without clone contents or credentials. After Codex completes, `finalize_codex_task` returns the final agent message, changed paths, commit SHA when present, and push status, then frees a clean Worker. `recover_quarantined_worker` returns a quarantined Worker to `FREE` after confirming a clean clone or successfully saving and pushing its completed task. `prepare_production_runtime` returns `READY` only after Production `/readyz` responds successfully. These tools do not send an automatic callback to an existing ChatGPT chat.
 
 Set `LOCAL_OPERATIONS_CODEX_EXECUTABLE` to the Codex executable path when it is not on `PATH`. If unset, Local Operations uses `shutil.which("codex")`.
 

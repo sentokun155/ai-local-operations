@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import server
 from local_mcp.dispatch import AppServerTransportError, dispatch_task
+from local_mcp.finalize import recover_worker
 from local_mcp.worker_pool import (
     ManagedRepository,
     WorkerPool,
@@ -211,6 +212,75 @@ class WorkerPoolTests(unittest.TestCase):
                 "worker_id": "worker-01", "work_identity": params["work_identity"],
                 "task_key": params["task_key"],
             })).structured_content
+
+    def _recover_fixture(self, client, worker_id="worker-01"):
+        with patch.object(WorkerPoolConfig, "load", return_value=self.config):
+            return recover_worker(worker_id, client_factory=lambda: client, state_path=self.state)
+
+    def test_recovery_releases_quarantined_clean_worker(self):
+        client = FakeClient()
+        params, _ = self._dispatch_fixture("GWI-0010-T-recover-clean", client)
+        self.pool._quarantine("worker-01", "RECOVERY_FIXTURE")
+
+        result = self._recover_fixture(client)
+        self.assertEqual(result["status"], "RECOVERED", result)
+        self.assertEqual(result["workerState"], "FREE")
+        self.assertEqual(result["pushStatus"], "NOT_NEEDED")
+        self.assertEqual(result["taskKey"], params["task_key"])
+        self.assertEqual(self.pool.status()[0]["state"], "FREE")
+
+    def test_recovery_commits_and_pushes_completed_task_before_freeing_worker(self):
+        client = FakeClient()
+        params, receipt = self._dispatch_fixture("GWI-0010-T-recover-result", client)
+        root = Path(receipt["resolvedRepositoryRoot"])
+        result_file = root / "work/gwi-0010/probes/GWI-0010-T-recover-result_RESULT.md"
+        result_file.parent.mkdir(parents=True)
+        result_file.write_text("Preserved probe Result.\n", encoding="utf-8")
+        self.pool._quarantine("worker-01", "RECOVERY_FIXTURE")
+
+        result = self._recover_fixture(client)
+        self.assertEqual(result["status"], "RECOVERED", result)
+        self.assertEqual(result["codexTurnStatus"], "completed")
+        self.assertEqual(result["finalAgentMessage"], "Fixture Result is ready.")
+        self.assertEqual(result["pushStatus"], "PUSHED")
+        self.assertTrue(result["commitSha"])
+        self.assertEqual(result["resultLocators"], ["work/gwi-0010/probes/GWI-0010-T-recover-result_RESULT.md"])
+        self.assertEqual(git(self.bare, "rev-parse", "refs/heads/feature"), result["commitSha"])
+        self.assertEqual(self.pool.status()[0]["state"], "FREE")
+
+    def test_recovery_push_failure_keeps_quarantine_and_local_commit(self):
+        client = FakeClient()
+        _, receipt = self._dispatch_fixture("GWI-0010-T-recover-push-failure", client)
+        root = Path(receipt["resolvedRepositoryRoot"])
+        result_file = root / "local-result.md"
+        result_file.write_text("Keep this completed Result.\n", encoding="utf-8")
+        other = self.root / "recovery-remote-writer"
+        subprocess.run(["git", "clone", "--branch", "feature", str(self.bare), str(other)], check=True, capture_output=True)
+        git(other, "config", "user.name", "Other Writer")
+        git(other, "config", "user.email", "other@example.invalid")
+        (other / "remote-advance.txt").write_text("remote advances first\n", encoding="utf-8")
+        git(other, "add", "remote-advance.txt")
+        git(other, "commit", "-m", "advance remote")
+        git(other, "push", "origin", "feature")
+        self.pool._quarantine("worker-01", "RECOVERY_FIXTURE")
+
+        result = self._recover_fixture(client)
+        self.assertEqual(result["status"], "HOLD", result)
+        self.assertEqual(result["reason"], "GIT_PUSH_FAILED")
+        self.assertEqual(result["pushStatus"], "FAILED")
+        self.assertEqual(result["workerState"], "QUARANTINED")
+        self.assertEqual(self.pool.status()[0]["state"], "QUARANTINED")
+        self.assertTrue(result["commitSha"])
+        self.assertEqual(git(root, "rev-parse", "HEAD"), result["commitSha"])
+        self.assertEqual(result_file.read_text(encoding="utf-8"), "Keep this completed Result.\n")
+
+    def test_recovery_reports_non_quarantined_and_unknown_workers(self):
+        with patch.object(WorkerPoolConfig, "load", return_value=self.config):
+            free = recover_worker("worker-02", state_path=self.state)
+            missing = recover_worker("worker-03", state_path=self.state)
+        self.assertEqual(free["status"], "UNCHANGED")
+        self.assertEqual(free["workerState"], "FREE")
+        self.assertEqual(missing["reason"], "WORKER_NOT_FOUND")
 
     def test_finalize_commits_pushes_intakes_result_and_releases_worker(self):
         client = FakeClient()
