@@ -67,7 +67,7 @@ Only the three Task-owned Result/design documents were created in the repository
 
 This follow-up supersedes the initial connection HOLD.
 
-- Unity CLI 1.0.0-beta.9; one ready Unity 6000.3.9f1 Editor at 127.0.0.1:7800, project C:/Users/sennn/2D_RPG_Project6_git.
+- Unity CLI 1.0.0-beta.9; one ready Unity 6000.3.9f1 Editor at 127.0.0.1:7800, project …/2D_RPG_Project6_git.
 - editor_status: ready, compiling=false, domainReloadInProgress=false, playMode=stopped.
 - unity list returned 149 built-in Editor commands with input schemas; it declares no per-command output schemas. The Codex catalog still has 244 tools and zero Unity matches.
 - list_tests found one EditMode documentation stub and no PlayMode tests. A single filtered run_tests probe passed 1/1 in 3.25 seconds.

@@ -112,7 +112,7 @@ The CLI supports Editor installation and authentication/licensing flows, but the
 
 ## Live Editor follow-up evidence
 
-The follow-up observed Unity CLI 1.0.0-beta.9, one ready Editor at 127.0.0.1:7800, project C:/Users/sennn/2D_RPG_Project6_git, and Unity 6000.3.9f1. unity list returned 149 built-in commands with input schemas but no declared per-command output schemas. The Codex task's 244 callable tools still had no Unity name/description match.
+The follow-up observed Unity CLI 1.0.0-beta.9, one ready Editor at 127.0.0.1:7800, project …/2D_RPG_Project6_git, and Unity 6000.3.9f1. unity list returned 149 built-in commands with input schemas but no declared per-command output schemas. The Codex task's 244 callable tools still had no Unity name/description match.
 
 editor_status reported not compiling, no domain reload, and Play Mode stopped. list_tests found one EditMode documentation stub and no PlayMode tests. Its source was an empty NUnit method. One exact filtered run_tests execution passed 1/1 in 3.25 seconds. An error-only get_console_logs read returned zero records. The project tracked diff remained clean; two unrelated untracked Markdown files had timestamps before this probe and were not changed.
 

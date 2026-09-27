@@ -28,7 +28,7 @@ This audit used the Codex Desktop task's callable-tool/resource catalog, the ins
 | Publisher | Unity Technologies | **.codex-plugin/plugin.json** |
 | Origin | https://github.com/Unity-Technologies/unity-agent-plugin.git | **.codex-marketplace-install.json** and package Git remote |
 | Installed source revision | **566368b21c92c93f74a7dbee34958385d028a300** | **.codex-marketplace-install.json**; matches package checkout HEAD |
-| Local package root | C:/Users/sennn/.codex/plugins/cache/unity-agent-plugin/unity/0.1.6-beta | Installed filesystem path |
+| Local package root | %USERPROFILE%/.codex/plugins/cache/unity-agent-plugin/unity/0.1.6-beta | Installed filesystem path |
 | Declared package entrypoint | **./skills/**; **requires_local_executor: true** | **.codex-plugin/plugin.json** |
 | Declared UI capabilities | **Interactive**, **Read**, **Write** | Manifest labels only; they do not enumerate callable tool schemas |
 
@@ -89,7 +89,7 @@ This section supersedes time-dependent connection, catalog, test, console, and c
 |---|---|---|
 | Direct Codex Unity tools | 244 active tools; zero Unity name/description matches. The installed package declares skills and a local executor, not a fixed MCP catalog. | Do not call the Pipeline commands direct Codex MCP tools. |
 | Live Editor catalog | unity list returned 149 built-in commands with names, descriptions, and input schemas. | No per-command output schemas are declared; no custom project command was listed. |
-| Editor target | One ready Editor at 127.0.0.1:7800; project C:/Users/sennn/2D_RPG_Project6_git; Unity 6000.3.9f1. | Multi-Editor ambiguity was not probed. |
+| Editor target | One ready Editor at 127.0.0.1:7800; project …/2D_RPG_Project6_git; Unity 6000.3.9f1. | Multi-Editor ambiguity was not probed. |
 | State and tests | editor_status: not compiling, no domain reload, Play Mode stopped. list_tests found one EditMode stub, no PlayMode tests; one filtered EditMode test passed 1/1. | Only a minimal EditMode route was exercised. |
 | Console and logs | get_console_logs severity=error returned zero entries. | Editor.log was not read; no dedicated Editor.log tool was observed. |
 | Timeout/cancel | run_tests declares async_tests and timeout (default 300 seconds); test_status and cancel_tests are present. | Async, timeout, and cancellation behavior were not exercised. |
