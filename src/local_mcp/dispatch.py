@@ -61,7 +61,7 @@ class AppServerClient:
     """One persistent app-server subprocess owned by the MCP server process."""
 
     def __init__(self, executable: str | None = None):
-        self._executable = executable
+        self._executable = executable or os.environ.get("LOCAL_OPERATIONS_CODEX_EXECUTABLE")
         self._process: subprocess.Popen[str] | None = None
         self._reader_threads: list[threading.Thread] = []
         self._response_condition = threading.Condition()
@@ -677,7 +677,7 @@ def _resolve_workspace(
                 "The absolute Task Request file is not inside a Git repository.",
                 missing_fact="a Git repository containing the Task Request file",
                 attempted_resolver="legacy absolute Task Request path compatibility mode",
-                recovery_action="Use a committed Task Request inside a Git repository, or provide a configured logical repository identity.",
+                recovery_action="Use a Task Request inside a Git repository, or provide a configured logical repository identity.",
             ) from exc
         resolver_source = "legacy_absolute_task_request_path"
     else:
@@ -809,38 +809,13 @@ def _validate(params: dict[str, Any], *, registry_path: Path | None = None) -> d
             attempted_resolver=resolution_source,
             recovery_action="Correct the Task Request locator; it is not searched for elsewhere.",
         )
-    commit = _git(repository, "rev-parse", "--verify", f"{branch}^{{commit}}")
-
     relative_posix = relative.as_posix()
+    commit = _git(repository, "rev-parse", "HEAD")
+    # These revision values are receipt diagnostics, not dispatch gates.
     try:
-        _git(repository, "ls-files", "--error-unmatch", "--", relative_posix)
-    except DispatchValidationError as exc:
-        raise _workspace_error(
-            "TASK_REQUEST_UNTRACKED",
-            "The Task Request file is not tracked by Git.",
-            missing_fact="a Git index entry for the Task Request file",
-            attempted_resolver="git ls-files in the resolved repository",
-            recovery_action="Track and commit the Task Request file on the requested branch.",
-        ) from exc
-    try:
-        committed_blob = _git(repository, "rev-parse", "--verify", f"{branch}:{relative_posix}")
-    except DispatchValidationError as exc:
-        raise _workspace_error(
-            "TASK_REQUEST_NOT_COMMITTED",
-            "The Task Request file is not present in the requested branch commit.",
-            missing_fact="a committed Task Request Git blob on the requested branch",
-            attempted_resolver="the requested branch's Git tree",
-            recovery_action="Commit the Task Request file on the requested branch.",
-        ) from exc
-    working_blob = _git(repository, "hash-object", f"--path={relative_posix}", str(candidate))
-    if working_blob != committed_blob:
-        raise _workspace_error(
-            "TASK_REQUEST_BLOB_MISMATCH",
-            "The working Task Request file differs from its committed Git object.",
-            missing_fact="byte-equivalence with the requested branch's committed Task Request blob",
-            attempted_resolver="Git blob verification in the resolved repository",
-            recovery_action="Restore the committed Task Request content or commit the intended request revision before dispatch.",
-        )
+        current_request_blob = _git(repository, "hash-object", f"--path={relative_posix}", str(candidate))
+    except DispatchValidationError:
+        current_request_blob = ""
 
     thread_name = f"{task_key} {task_name}"
     if len(thread_name) > _THREAD_NAME_LIMIT:
@@ -856,7 +831,7 @@ def _validate(params: dict[str, Any], *, registry_path: Path | None = None) -> d
         "workspace_resolution_source": resolution_source,
         "branch": branch,
         "repository_commit": commit,
-        "task_request_blob_id": committed_blob,
+        "task_request_blob_id": current_request_blob,
         "model": model,
         "reasoning_effort": effort,
         "thread_name": thread_name,
@@ -898,6 +873,15 @@ class DispatchLedger:
                     PRIMARY KEY (work_identity, task_key)
                 )"""
             )
+            connection.execute(
+                """CREATE TABLE IF NOT EXISTS finalized_results (
+                    work_identity TEXT NOT NULL,
+                    task_key TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (work_identity, task_key)
+                )"""
+            )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(dispatches)")}
             if "repository_identity" not in columns:
                 connection.execute("ALTER TABLE dispatches ADD COLUMN repository_identity TEXT")
@@ -920,7 +904,7 @@ class DispatchLedger:
         # Keep the V0 hash projection stable so existing SQLite receipts remain idempotent.
         stable_fields = {
             "work_identity", "task_key", "task_name", "task_request_locator", "repository",
-            "branch", "repository_commit", "task_request_blob_id", "model", "reasoning_effort",
+            "branch", "model", "reasoning_effort",
             "thread_name",
         }
         payload = {key: data[key] for key in sorted(stable_fields)}
@@ -1013,12 +997,56 @@ class DispatchLedger:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def finalized_result(self, work_identity: str, task_key: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT result_json FROM finalized_results WHERE work_identity=? AND task_key=?",
+                (work_identity, task_key),
+            ).fetchone()
+        if not row:
+            return None
+        result = json.loads(row["result_json"])
+        return result if isinstance(result, dict) else None
+
+    def save_finalization(self, work_identity: str, task_key: str, result: dict[str, Any]) -> None:
+        encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """INSERT INTO finalized_results(work_identity,task_key,result_json,updated_at)
+                   VALUES(?,?,?,?) ON CONFLICT(work_identity,task_key) DO UPDATE SET
+                   result_json=excluded.result_json,updated_at=excluded.updated_at""",
+                (work_identity, task_key, encoded, _now()),
+            )
+
     def release_if_prepared(self, data: dict[str, Any]) -> None:
         with closing(self._connect()) as connection:
             connection.execute(
                 "DELETE FROM dispatches WHERE work_identity=? AND task_key=? AND request_hash=? AND state='PREPARED'",
                 (data["work_identity"], data["task_key"], self._request_hash(data)),
             )
+
+    def rebind_prepared_revision(self, data: dict[str, Any]) -> dict[str, Any] | None:
+        """Refresh diagnostic revision fields for an unfinished compatible dispatch."""
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """UPDATE dispatches SET request_hash=?,repository_commit=?,task_request_blob_id=?,updated_at=?
+                   WHERE work_identity=? AND task_key=? AND state IN ('PREPARED','THREAD_CREATED')
+                   AND task_name=? AND task_request_locator=? AND repository=? AND branch=? AND thread_name=?
+                   AND model_requested IS ? AND reasoning_effort_requested IS ?""",
+                (
+                    self._request_hash(data), data["repository_commit"], data["task_request_blob_id"],
+                    _now(), data["work_identity"], data["task_key"], data["task_name"],
+                    data["task_request_locator"], data["repository"], data["branch"], data["thread_name"],
+                    data["model"], data["reasoning_effort"],
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM dispatches WHERE work_identity=? AND task_key=?",
+                (data["work_identity"], data["task_key"]),
+            ).fetchone()
+            connection.commit()
+        return dict(row) if row is not None else None
 
 
 def _manifest(data: dict[str, Any]) -> str:
@@ -1028,11 +1056,9 @@ def _manifest(data: dict[str, Any]) -> str:
             "taskKey": data["task_key"],
             "taskName": data["task_name"],
             "taskRequestLocator": data["task_request_locator"],
-            "taskRequestBlobId": data["task_request_blob_id"],
             "repository": data["repository"],
             "repositoryIdentity": data["repository_identity"],
             "workspaceResolutionSource": data["workspace_resolution_source"],
-            "repositoryCommit": data["repository_commit"],
             "branch": data["branch"],
         },
         ensure_ascii=False,
@@ -1043,10 +1069,9 @@ def _manifest(data: dict[str, Any]) -> str:
 def _prompt(data: dict[str, Any]) -> str:
     return (
         "The following repository-backed Task Request is the canonical scope for this task. "
-        "Read exactly the specified file in the specified repository. Verify the repository, branch, "
-        "commit, and Task Request Git blob ID before editing. If any value does not match or the file "
-        "cannot be read, stop and report HOLD without making changes. Do not substitute another task, "
-        "branch, file, or revision. Work only within the specified repository. This dispatch grants "
+        "Read exactly the current specified file in the requested repository and work on the requested "
+        "branch. If the file cannot be read, stop and report HOLD without making changes. Do not "
+        "substitute another task, branch, or file. Work only within the specified repository. This dispatch grants "
         "no authority for force-push, merge, publication, deployment, or other external side effects.\n"
         "Dispatch manifest (data): " + _manifest(data)
     )
@@ -1257,9 +1282,12 @@ def dispatch_task(
         return _hold("DISPATCH_LEDGER_UNAVAILABLE", "The duplicate-protection ledger is unavailable; nothing was dispatched.")
 
     if row["request_hash"] != DispatchLedger._request_hash(data):
-        if uses_worker_pool and worker_lease:
-            worker_pool.abort_pre_dispatch(worker_lease["worker_id"], data["work_identity"], data["task_key"])
-        return _hold("IDEMPOTENCY_KEY_CONFLICT", "This work_identity and task_key are already bound to different dispatch inputs.", row)
+        if row["state"] in {"PREPARED", "THREAD_CREATED"}:
+            row = ledger.rebind_prepared_revision(data) or row
+        if row["request_hash"] != DispatchLedger._request_hash(data):
+            if uses_worker_pool and worker_lease:
+                worker_pool.abort_pre_dispatch(worker_lease["worker_id"], data["work_identity"], data["task_key"])
+            return _hold("IDEMPOTENCY_KEY_CONFLICT", "This work_identity and task_key are already bound to different dispatch inputs.", row)
     if row["state"] == "ACCEPTED":
         if uses_worker_pool and worker_lease:
             worker_pool.abort_pre_dispatch(worker_lease["worker_id"], data["work_identity"], data["task_key"])
@@ -1315,6 +1343,7 @@ def dispatch_task(
     if starting_new_thread:
         thread_params: dict[str, Any] = {
             "cwd": data["repository"],
+            "runtimeWorkspaceRoots": [data["repository"]],
             "ephemeral": False,
             "approvalPolicy": "never",
             "sandbox": "workspace-write",

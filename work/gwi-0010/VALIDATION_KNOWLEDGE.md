@@ -194,3 +194,13 @@ Clean-checkout purity, immutable runtime discipline, strict promotion, or exact 
 Existing over-engineered behavior should not be rewritten immediately if doing so would create another implementation + verification cycle with no current benefit. Instead, when the affected area next needs a real change, that bounded change must simplify the area comprehensively rather than add another exception layer. Source, tests, and documentation must be updated together, followed by one verification against the actual supported runtime.
 
 This rule is normative through root `AGENTS.md`.
+
+## K11 — T002 Result persistence / Worker lifecycle
+
+GWI-0010-T002 now uses one Local Operations tool, `finalize_codex_task`, for completed-turn intake, ordinary commit/push, and Worker release. The tool reads the exact dispatched turn with `thread/read`, returns its final `agentMessage`, stages non-ignored changes, blocks common credential files/values, commits with the Work/Task identity, and uses `git push origin <requested-branch>` without force. A push failure leaves the local commit and Worker lease in place.
+
+PREPARE validates and updates only the selected repository clone. It fetches `origin`, checks out the requested branch, and fast-forwards when possible. Release checks that the target clone is clean and leaves it on its current branch. It does not verify sibling clone snapshots, compare against remote HEAD, or restore the configured default branch. Dispatch reads the current Task Request file without requiring a committed blob match or pinning the starting commit.
+
+The former `release_codex_worker` tool was removed; `finalize_codex_task` also frees a clean read-only Worker. Development runtime restart may proceed from a dirty checkout and uses a normal fast-forward update if needed; conflicting updates stop without discarding edits. `LOCAL_OPERATIONS_CODEX_EXECUTABLE` selects the Codex executable, with PATH lookup as the fallback.
+
+The probe Workers holding `GWI-0010-PROBE-002` and `GWI-0010-PROBE-003` were inspected. Their untracked Result files were read and preserved. PROBE-002 remains `INCONCLUSIVE`; PROBE-003 records that chat-list and chat-send tools were absent from that context. Both Workers remain `QUARANTINED`. No probe output or unrelated local state was removed. Development E2E uses a separate FREE Worker.

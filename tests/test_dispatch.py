@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import json
 import asyncio
+import os
 import sqlite3
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
-from local_mcp.dispatch import AppServerTransportError, AppServerUnavailable, DispatchLedger, _validate, dispatch_task
+from local_mcp.dispatch import AppServerClient, AppServerTransportError, AppServerUnavailable, DispatchLedger, _validate, dispatch_task
 from server import mcp, ping, ping2
 
 
@@ -115,6 +117,19 @@ class DispatchTests(unittest.TestCase):
             registry_path=self.registry,
         )
 
+    def seed_legacy_prepared_revision(self) -> None:
+        data = _validate(self.params, registry_path=self.registry)
+        DispatchLedger(self.state).get_or_create(data)
+        connection = sqlite3.connect(self.state)
+        try:
+            connection.execute(
+                "UPDATE dispatches SET request_hash='legacy-revision-bound-hash' WHERE work_identity=? AND task_key=?",
+                (data["work_identity"], data["task_key"]),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
     def test_ping_and_ping2_keep_existing_responses(self) -> None:
         self.assertEqual(ping(), "LOCAL_MCP_OK")
         self.assertEqual(ping2(), "LOCAL_MCP_OK2")
@@ -132,6 +147,19 @@ class DispatchTests(unittest.TestCase):
         self.assertIn("repository", schema["required"])
         self.assertIn("task_request_locator", schema["required"])
         self.assertIn("branch", schema["required"])
+
+    def test_mcp_catalog_exposes_finalize_as_the_result_and_release_route(self) -> None:
+        tools = asyncio.run(mcp.list_tools())
+        by_name = {tool.name: tool for tool in tools}
+        self.assertIn("finalize_codex_task", by_name)
+        schema = by_name["finalize_codex_task"].input_schema
+        self.assertEqual(set(schema["required"]), {"worker_id", "work_identity", "task_key"})
+        self.assertNotIn("release_codex_worker", by_name)
+
+    def test_codex_executable_can_be_overridden_by_environment(self) -> None:
+        with patch.dict(os.environ, {"LOCAL_OPERATIONS_CODEX_EXECUTABLE": r"C:\Codex\codex.exe"}):
+            self.assertEqual(AppServerClient()._executable, r"C:\Codex\codex.exe")
+        self.assertEqual(AppServerClient("explicit-codex")._executable, "explicit-codex")
 
     def test_explicit_path_override_resolves_and_verifies_logical_identity(self) -> None:
         result = self.dispatch()
@@ -231,17 +259,30 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(self.client.ready_calls, 0)
         self.assertEqual(self.client.requests, [])
 
-    def test_untracked_task_request_holds(self) -> None:
+    def test_current_untracked_task_request_is_accepted_without_revision_gate(self) -> None:
         (self.root / "UNTRACKED_REQUEST.md").write_text("# not tracked\n", encoding="utf-8")
         self.params["task_request_locator"] = "UNTRACKED_REQUEST.md"
         result = self.dispatch()
-        self.assertEqual(result["reason"], "TASK_REQUEST_UNTRACKED")
-        self.assertEqual(self.client.ready_calls, 0)
+        self.assertEqual(result["status"], "DISPATCHED")
 
-    def test_committed_blob_mismatch_holds(self) -> None:
+    def test_current_task_request_edits_are_accepted_without_blob_pin(self) -> None:
         (self.root / "TASK_REQUEST.md").write_text("# changed after commit\n", encoding="utf-8")
         result = self.dispatch()
-        self.assertEqual(result["reason"], "TASK_REQUEST_BLOB_MISMATCH")
+        self.assertEqual(result["status"], "DISPATCHED")
+        turn_start = next(params for method, params in self.client.requests if method == "turn/start")
+        self.assertNotIn("taskRequestBlobId", turn_start["input"][0]["text"])
+
+    def test_prepared_legacy_revision_mismatch_rebinds_for_same_inputs(self) -> None:
+        self.seed_legacy_prepared_revision()
+        result = self.dispatch()
+        self.assertEqual(result["status"], "DISPATCHED")
+
+    def test_prepared_legacy_revision_mismatch_does_not_rebind_changed_task(self) -> None:
+        self.seed_legacy_prepared_revision()
+        self.params["task_name"] = "different task"
+        result = self.dispatch()
+        self.assertEqual(result["status"], "HOLD")
+        self.assertEqual(result["reason"], "IDEMPOTENCY_KEY_CONFLICT")
         self.assertEqual(self.client.ready_calls, 0)
 
     def test_repository_without_remote_identity_holds(self) -> None:
@@ -265,6 +306,7 @@ class DispatchTests(unittest.TestCase):
         thread_params = self.client.requests[2][1]
         self.assertEqual(thread_params["sandbox"], "workspace-write")
         self.assertEqual(thread_params["approvalPolicy"], "never")
+        self.assertEqual(thread_params["runtimeWorkspaceRoots"], [str(self.root)])
 
     def test_unsupported_model_effort_is_held_before_thread_creation(self) -> None:
         self.params["reasoning_effort"] = "ultra"

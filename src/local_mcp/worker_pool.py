@@ -247,16 +247,6 @@ class WorkerPool:
                     failure_reason TEXT
                 )"""
             )
-            connection.execute(
-                """CREATE TABLE IF NOT EXISTS worker_snapshots (
-                    worker_id TEXT NOT NULL,
-                    repository_identity TEXT NOT NULL,
-                    branch TEXT NOT NULL,
-                    commit_id TEXT NOT NULL,
-                    PRIMARY KEY(worker_id, repository_identity),
-                    FOREIGN KEY(worker_id) REFERENCES workers(worker_id)
-                )"""
-            )
             for worker_id in config.worker_ids():
                 connection.execute(
                     "INSERT OR IGNORE INTO workers(worker_id,state,updated_at) VALUES(?, 'FREE', datetime('now'))",
@@ -329,9 +319,6 @@ class WorkerPool:
                         raise WorkerPoolError("WORKER_BOOTSTRAP_FAILED", "A configured repository clone could not be created.", worker_id=worker_id) from exc
                     outcomes.append({"workerId": worker_id, "repository": repo.identity, "result": "CLONED"})
                 elif target.is_dir() and _identity_matches(target, repo.identity) and not _status(target):
-                    branch = _git(target, "branch", "--show-current")
-                    if branch != repo.default_branch:
-                        raise WorkerPoolError("WORKER_BOOTSTRAP_FAILED", "An existing clean clone is not on its configured default branch.", worker_id=worker_id)
                     outcomes.append({"workerId": worker_id, "repository": repo.identity, "result": "EXISTS_VALIDATED"})
                 else:
                     self._quarantine(worker_id, "BOOTSTRAP_FOUND_UNEXPECTED_LOCAL_STATE")
@@ -367,21 +354,11 @@ class WorkerPool:
             connection.commit()
 
         try:
-            snapshots: list[tuple[str, str, str]] = []
-            target_path: Path | None = None
-            for repo in self.config.repositories:
-                path = self.config.repository_path(selected, repo)
-                if not path.is_dir() or not _identity_matches(path, repo.identity):
-                    raise WorkerPoolError("WORKER_REPOSITORY_UNAVAILABLE", "A configured managed repository is missing or has the wrong remote.", worker_id=selected)
-                if _status(path):
-                    raise WorkerPoolError("WORKER_REPOSITORY_DIRTY", "A managed repository contains tracked or untracked changes; nothing was discarded.", worker_id=selected)
-                if repo.identity == repository.identity:
-                    target_path = path
-                else:
-                    other_branch = _git(path, "branch", "--show-current")
-                    other_commit = _git(path, "rev-parse", "HEAD")
-                    snapshots.append((repo.identity, other_branch, other_commit))
-            assert target_path is not None
+            target_path = self.config.repository_path(selected, repository)
+            if not target_path.is_dir() or not _identity_matches(target_path, repository.identity):
+                raise WorkerPoolError("WORKER_REPOSITORY_UNAVAILABLE", "The selected Worker clone is missing or has the wrong remote.", worker_id=selected)
+            if _status(target_path):
+                raise WorkerPoolError("WORKER_REPOSITORY_DIRTY", "The selected Worker clone has uncommitted changes; nothing was discarded.", worker_id=selected)
             _git(target_path, "check-ref-format", "--branch", branch)
             _git(target_path, "fetch", "origin")
             remote_branch = f"refs/remotes/origin/{branch}"
@@ -404,16 +381,8 @@ class WorkerPool:
             if _status(target_path):
                 raise WorkerPoolError("WORKER_REPOSITORY_DIRTY", "Repository preparation left unexpected working-tree changes; nothing was discarded.", worker_id=selected)
             target_commit = _git(target_path, "rev-parse", "HEAD")
-            snapshots.append((repository.identity, branch, target_commit))
             with closing(self._connect()) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                connection.execute("DELETE FROM worker_snapshots WHERE worker_id=?", (selected,))
-                connection.executemany(
-                    "INSERT INTO worker_snapshots(worker_id,repository_identity,branch,commit_id) VALUES(?,?,?,?)",
-                    [(selected, *snapshot) for snapshot in snapshots],
-                )
                 connection.execute("UPDATE workers SET updated_at=datetime('now') WHERE worker_id=? AND state='LEASED'", (selected,))
-                connection.commit()
             return {
                 "worker_id": selected,
                 "repository": repository.identity,
@@ -448,85 +417,31 @@ class WorkerPool:
         except WorkerPoolError:
             return False
 
-    def release_completed(self, worker_id: str, work_identity: str, task_key: str) -> dict[str, Any]:
+    def release_task(self, worker_id: str, work_identity: str, task_key: str) -> dict[str, Any]:
         lease = self.get_lease(worker_id, work_identity, task_key)
         if not lease:
             raise WorkerPoolError("WORKER_LEASE_NOT_FOUND", "No matching active Worker lease exists.", worker_id=worker_id)
-        if not lease.get("thread_id"):
-            raise WorkerPoolError("WORKER_COMPLETION_UNVERIFIED", "The dispatch has no acknowledged thread identity to verify.", worker_id=worker_id)
-        return self._release_clean(worker_id, lease, require_completed_turn=True)
-
-    def _release_clean(self, worker_id: str, lease: dict[str, Any], *, require_completed_turn: bool) -> dict[str, Any]:
-        snapshots = self._snapshots(worker_id)
-        try:
-            target_repo = self.config.repository(lease["repository_identity"])
-            for repo in self.config.repositories:
-                path = self.config.repository_path(worker_id, repo)
-                if not path.is_dir() or not _identity_matches(path, repo.identity) or _status(path):
-                    raise WorkerPoolError("WORKER_RELEASE_UNSAFE", "A managed repository is missing, has the wrong remote, or contains local changes.", worker_id=worker_id)
-                snap = snapshots.get(repo.identity)
-                if not snap:
-                    raise WorkerPoolError("WORKER_RELEASE_UNSAFE", "The dispatch baseline is incomplete.", worker_id=worker_id)
-                if repo.identity != target_repo.identity:
-                    if _git(path, "branch", "--show-current") != snap["branch"] or _git(path, "rev-parse", "HEAD") != snap["commit_id"]:
-                        raise WorkerPoolError("WORKER_RELEASE_UNSAFE", "A non-target managed repository changed during the Task.", worker_id=worker_id)
-                    continue
-
-                branch = lease["branch"]
-                _git(path, "fetch", "origin")
-                remote_branch = f"refs/remotes/origin/{branch}"
-                remote_commit = _git(path, "rev-parse", "--verify", f"{remote_branch}^{{commit}}")
-                local_commit = _git(path, "rev-parse", "HEAD")
-                # Ensure the task branch reaches the remote exactly before restoring the default branch.
-                if local_commit != remote_commit:
-                    counts = _git(path, "rev-list", "--left-right", "--count", f"HEAD...{remote_branch}")
-                    ahead, behind = [int(part) for part in counts.split()]
-                    if ahead or not behind:
-                        raise WorkerPoolError("WORKER_RELEASE_UNSAFE", "The required branch is not safely synchronized with origin.", worker_id=worker_id)
-                    _git(path, "merge", "--ff-only", remote_branch)
-                if _status(path):
-                    raise WorkerPoolError("WORKER_RELEASE_UNSAFE", "The Task repository became dirty during release.", worker_id=worker_id)
-                default_ref = f"refs/remotes/origin/{repo.default_branch}"
-                default_commit = _git(path, "rev-parse", "--verify", f"{default_ref}^{{commit}}")
-                current = _git(path, "branch", "--show-current")
-                if current != repo.default_branch:
-                    local_default = _git(path, "branch", "--list", repo.default_branch)
-                    if local_default:
-                        _git(path, "checkout", repo.default_branch)
-                    else:
-                        _git(path, "checkout", "--track", "-b", repo.default_branch, default_ref)
-                current = _git(path, "rev-parse", "HEAD")
-                if current != default_commit:
-                    counts = _git(path, "rev-list", "--left-right", "--count", f"HEAD...{default_ref}")
-                    ahead, behind = [int(part) for part in counts.split()]
-                    if ahead or not behind:
-                        raise WorkerPoolError("WORKER_RELEASE_UNSAFE", "The default branch cannot be restored with a fast-forward.", worker_id=worker_id)
-                    _git(path, "merge", "--ff-only", default_ref)
-                if _status(path):
-                    raise WorkerPoolError("WORKER_RELEASE_UNSAFE", "The default-branch checkout is dirty.", worker_id=worker_id)
-
-            with closing(self._connect()) as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                connection.execute(
-                    """UPDATE workers SET state='FREE',work_identity=NULL,task_key=NULL,repository_identity=NULL,
-                        branch=NULL,thread_id=NULL,turn_id=NULL,leased_at=NULL,updated_at=datetime('now'),failure_reason=NULL
-                       WHERE worker_id=? AND state='LEASED' AND work_identity=? AND task_key=?""",
-                    (worker_id, lease["work_identity"], lease["task_key"]),
-                )
-                connection.execute("DELETE FROM worker_snapshots WHERE worker_id=?", (worker_id,))
-                connection.commit()
-            return {"workerId": worker_id, "state": "FREE", "releasedTaskKey": lease["task_key"]}
-        except WorkerPoolError as exc:
-            self._quarantine(worker_id, exc.reason)
-            raise
-        except Exception as exc:
-            self._quarantine(worker_id, "WORKER_RELEASE_UNEXPECTED_FAILURE")
-            raise WorkerPoolError("WORKER_RELEASE_UNSAFE", "Release stopped and the Worker was quarantined without deleting local data.", worker_id=worker_id) from exc
-
-    def _snapshots(self, worker_id: str) -> dict[str, dict[str, str]]:
+        repo = self.config.repository(lease["repository_identity"])
+        path = self.config.repository_path(worker_id, repo)
+        if not path.is_dir() or not _identity_matches(path, repo.identity):
+            raise WorkerPoolError("WORKER_REPOSITORY_UNAVAILABLE", "The leased Worker clone is missing or has the wrong remote.", worker_id=worker_id)
+        if _git(path, "branch", "--show-current") != lease["branch"]:
+            raise WorkerPoolError("WORKER_BRANCH_MISMATCH", "The leased Worker is no longer on its Task branch.", worker_id=worker_id)
+        if _status(path):
+            raise WorkerPoolError("WORKER_REPOSITORY_DIRTY", "The Task clone still has uncommitted changes; the Worker remains leased.", worker_id=worker_id)
         with closing(self._connect()) as connection:
-            rows = connection.execute("SELECT repository_identity,branch,commit_id FROM worker_snapshots WHERE worker_id=?", (worker_id,)).fetchall()
-        return {row["repository_identity"]: {"branch": row["branch"], "commit_id": row["commit_id"]} for row in rows}
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """UPDATE workers SET state='FREE',work_identity=NULL,task_key=NULL,repository_identity=NULL,
+                    branch=NULL,thread_id=NULL,turn_id=NULL,leased_at=NULL,updated_at=datetime('now'),failure_reason=NULL
+                   WHERE worker_id=? AND state='LEASED' AND work_identity=? AND task_key=?""",
+                (worker_id, work_identity, task_key),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                raise WorkerPoolError("WORKER_LEASE_NOT_FOUND", "The matching Worker lease changed during release.", worker_id=worker_id)
+            connection.commit()
+        return {"workerId": worker_id, "state": "FREE", "releasedTaskKey": task_key}
 
     def _quarantine(self, worker_id: str, reason: str) -> None:
         with closing(self._connect()) as connection:

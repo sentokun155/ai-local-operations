@@ -11,7 +11,7 @@ import sqlite3
 from unittest.mock import patch
 
 import server
-from local_mcp.dispatch import AppServerTransportError
+from local_mcp.dispatch import AppServerTransportError, dispatch_task
 from local_mcp.worker_pool import (
     ManagedRepository,
     WorkerPool,
@@ -49,7 +49,10 @@ class FakeClient:
         if method == "turn/start":
             return {"turn": {"id": "turn-fixture"}}
         if method == "thread/read":
-            return {"thread": {"turns": [{"id": "turn-fixture", "status": "completed"}]}}
+            return {"thread": {"turns": [{
+                "id": "turn-fixture", "status": "completed",
+                "items": [{"type": "agentMessage", "text": "Fixture Result is ready."}],
+            }]}}
         if method == "thread/name/set":
             return {}
         raise AssertionError(f"unexpected method {method}")
@@ -158,58 +161,121 @@ class WorkerPoolTests(unittest.TestCase):
         self.assertTrue((path / "local-only.txt").exists())
         self.assertEqual(self.pool.status()[0]["state"], "QUARANTINED")
 
-    def test_safe_release_returns_worker_to_default_branch_and_reuses_it(self):
+    def test_release_keeps_task_branch_and_next_task_can_switch_branch(self):
         lease = self.lease()
         self.pool.record_dispatch(lease["worker_id"], "GWI-0010-FIXTURE", "GWI-0010-T-fixture",
                                   thread_id="thread-fixture", turn_id="turn-fixture")
-        result = self.pool.release_completed("worker-01", "GWI-0010-FIXTURE", "GWI-0010-T-fixture")
+        result = self.pool.release_task("worker-01", "GWI-0010-FIXTURE", "GWI-0010-T-fixture")
         self.assertEqual(result["state"], "FREE")
-        self.assertEqual(git(Path(lease["repository_root"]), "branch", "--show-current"), "main")
-        again = self.lease(task="GWI-0010-T-reuse")
+        self.assertEqual(git(Path(lease["repository_root"]), "branch", "--show-current"), "feature")
+        again = self.lease(task="GWI-0010-T-reuse", branch="main")
         self.assertEqual(again["worker_id"], "worker-01")
+        self.assertEqual(git(Path(again["repository_root"]), "branch", "--show-current"), "main")
 
-    def test_release_quarantines_dirty_state_without_deleting_it(self):
+    def test_release_keeps_dirty_worker_leased_without_deleting_it(self):
         lease = self.lease()
         self.pool.record_dispatch(lease["worker_id"], "GWI-0010-FIXTURE", "GWI-0010-T-fixture",
                                   thread_id="thread-fixture", turn_id="turn-fixture")
         marker = Path(lease["repository_root"]) / "keep.txt"
         marker.write_text("keep", encoding="utf-8")
         with self.assertRaises(WorkerPoolError):
-            self.pool.release_completed("worker-01", "GWI-0010-FIXTURE", "GWI-0010-T-fixture")
+            self.pool.release_task("worker-01", "GWI-0010-FIXTURE", "GWI-0010-T-fixture")
         self.assertTrue(marker.exists())
-        self.assertEqual(self.pool.status()[0]["state"], "QUARANTINED")
+        self.assertEqual(self.pool.status()[0]["state"], "LEASED")
 
-    def test_explicitly_rejected_thread_can_release_when_app_server_has_no_turn(self):
-        lease = self.pool.lease(
-            work_identity="GWI-0010-FIXTURE", task_key="GWI-0010-T-rejected",
-            repository_identity="example/fixture", branch="main",
-        )
-        self.pool.record_dispatch(lease["worker_id"], "GWI-0010-FIXTURE", "GWI-0010-T-rejected",
-                                  thread_id="thread-rejected", turn_id=None)
-        connection = sqlite3.connect(self.state)
-        try:
-            connection.execute("CREATE TABLE dispatches(work_identity TEXT, task_key TEXT, state TEXT, thread_id TEXT, turn_id TEXT)")
-            connection.execute("INSERT INTO dispatches VALUES(?, ?, 'THREAD_CREATED', ?, NULL)",
-                               ("GWI-0010-FIXTURE", "GWI-0010-T-rejected", "thread-rejected"))
-            connection.commit()
-        finally:
-            connection.close()
+    def _dispatch_fixture(self, task_key: str, client: FakeClient, branch: str = "feature"):
+        pool_config_path = self.root / "pool.json"
+        pool_config_path.write_text(json.dumps({
+            "version": 1, "workerCount": 2,
+            "repositories": [{"identity": "example/fixture", "cloneUrl": self.clone_url, "defaultBranch": "main"}],
+        }), encoding="utf-8")
+        params = {
+            "work_identity": "GWI-0010-FIXTURE", "task_key": task_key,
+            "task_name": "Persistence fixture", "task_request_locator": "TASK_REQUEST.md",
+            "repository": "example/fixture", "branch": branch,
+            "model": None, "reasoning_effort": None,
+        }
+        with patch.object(server, "dispatch_task", side_effect=lambda payload: dispatch_task(
+            payload, client_factory=lambda: client, state_path=self.state,
+            worker_pool_config_path=pool_config_path, worker_root=self.config.worker_root,
+        )):
+            result = asyncio.run(server.mcp.call_tool("dispatch_codex_task", params)).structured_content
+        self.assertEqual(result["status"], "DISPATCHED", result)
+        return params, result
 
-        class NoTurnClient(FakeClient):
-            def request(self, method, params):
-                if method == "thread/read":
-                    return {"thread": {"turns": []}}
-                return super().request(method, params)
-
+    def _finalize_fixture(self, params, client):
         with patch.object(server.WorkerPoolConfig, "load", return_value=self.config), \
-             patch.object(server, "default_state_path", return_value=self.state), \
-             patch.object(server, "_get_default_client", return_value=NoTurnClient()):
-            result = asyncio.run(server.mcp.call_tool("release_codex_worker", {
-                "worker_id": "worker-01", "work_identity": "GWI-0010-FIXTURE",
-                "task_key": "GWI-0010-T-rejected", "confirm_completed": True,
+             patch("local_mcp.finalize.default_state_path", return_value=self.state), \
+             patch("local_mcp.finalize._get_default_client", return_value=client):
+            return asyncio.run(server.mcp.call_tool("finalize_codex_task", {
+                "worker_id": "worker-01", "work_identity": params["work_identity"],
+                "task_key": params["task_key"],
             })).structured_content
-        self.assertEqual(result["status"], "RELEASED")
+
+    def test_finalize_commits_pushes_intakes_result_and_releases_worker(self):
+        client = FakeClient()
+        params, receipt = self._dispatch_fixture("GWI-0010-T-persist", client)
+        root = Path(receipt["resolvedRepositoryRoot"])
+        (root / "work/gwi-0010/probes").mkdir(parents=True)
+        result_file = root / "work/gwi-0010/probes/GWI-0010-T-persist_RESULT.md"
+        result_file.write_text("Fixture Result\n", encoding="utf-8")
+        result = self._finalize_fixture(params, client)
+        self.assertEqual(result["status"], "FINALIZED", result)
+        self.assertEqual(result["codexTurnStatus"], "completed")
+        self.assertEqual(result["finalAgentMessage"], "Fixture Result is ready.")
+        self.assertEqual(result["pushStatus"], "PUSHED")
+        self.assertTrue(result["commitSha"])
+        self.assertEqual(result["resultLocators"], ["work/gwi-0010/probes/GWI-0010-T-persist_RESULT.md"])
         self.assertEqual(self.pool.status()[0]["state"], "FREE")
+        self.assertEqual(git(self.bare, "rev-parse", "refs/heads/feature"), result["commitSha"])
+        again = self._finalize_fixture(params, client)
+        self.assertEqual(again["status"], "ALREADY_FINALIZED")
+
+    def test_no_change_task_returns_result_without_commit_and_releases(self):
+        client = FakeClient()
+        params, _ = self._dispatch_fixture("GWI-0010-T-readonly", client)
+        result = self._finalize_fixture(params, client)
+        self.assertEqual(result["status"], "FINALIZED")
+        self.assertIsNone(result["commitSha"])
+        self.assertEqual(result["pushStatus"], "NOT_NEEDED")
+        self.assertEqual(result["finalAgentMessage"], "Fixture Result is ready.")
+        self.assertEqual(self.pool.status()[0]["state"], "FREE")
+
+    def test_push_rejection_keeps_local_commit_and_worker_lease(self):
+        client = FakeClient()
+        params, receipt = self._dispatch_fixture("GWI-0010-T-push-reject", client, branch="main")
+        root = Path(receipt["resolvedRepositoryRoot"])
+        (root / "local-result.md").write_text("keep this result", encoding="utf-8")
+        other = self.root / "other-writer"
+        subprocess.run(["git", "clone", str(self.bare), str(other)], check=True, capture_output=True)
+        git(other, "config", "user.name", "Other Writer")
+        git(other, "config", "user.email", "other@example.invalid")
+        (other / "remote-update.txt").write_text("advance remote", encoding="utf-8")
+        git(other, "add", "remote-update.txt")
+        git(other, "commit", "-m", "advance remote")
+        git(other, "push", "origin", "main")
+        result = self._finalize_fixture(params, client)
+        self.assertEqual(result["status"], "HOLD")
+        self.assertEqual(result["reason"], "GIT_PUSH_FAILED", result)
+        self.assertEqual(result["pushStatus"], "FAILED")
+        self.assertTrue(result["commitSha"])
+        self.assertEqual(git(root, "rev-parse", "HEAD"), result["commitSha"])
+        self.assertEqual(git(root, "status", "--short"), "")
+        self.assertEqual(self.pool.status()[0]["state"], "LEASED")
+        self.assertIn("keep this result", (root / "local-result.md").read_text(encoding="utf-8"))
+
+    def test_explicitly_staged_secret_is_not_committed(self):
+        client = FakeClient()
+        params, receipt = self._dispatch_fixture("GWI-0010-T-secret", client)
+        root = Path(receipt["resolvedRepositoryRoot"])
+        secret = root / ".env"
+        secret.write_text("OPENAI_API_KEY=sk-" + "x" * 30, encoding="utf-8")
+        git(root, "add", "-f", ".env")
+        result = self._finalize_fixture(params, client)
+        self.assertEqual(result["reason"], "SECRET_CONTENT_NOT_COMMITTED")
+        self.assertTrue(secret.exists())
+        self.assertNotEqual(git(root, "log", "-1", "--format=%s"), "Local Operations: GWI-0010-FIXTURE/GWI-0010-T-secret")
+        self.assertEqual(self.pool.status()[0]["state"], "LEASED")
 
     def test_logical_mcp_dispatch_uses_selected_worker_root_and_receipt(self):
         client = FakeClient()

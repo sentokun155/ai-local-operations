@@ -99,8 +99,8 @@ function Assert-RepositoryRoot([string]$Root, [string]$ExpectedBranch, [switch]$
     return [string]$branch
 }
 
-function Sync-RuntimeBranch([string]$Root, [string]$ExpectedBranch) {
-    $branch = Assert-RepositoryRoot -Root $Root -ExpectedBranch $ExpectedBranch -RequireClean
+function Sync-RuntimeBranch([string]$Root, [string]$ExpectedBranch, [switch]$RequireClean) {
+    $branch = Assert-RepositoryRoot -Root $Root -ExpectedBranch $ExpectedBranch -RequireClean:$RequireClean
     & git -C $Root fetch origin $branch
     if ($LASTEXITCODE -ne 0) { throw "origin branchを取得できません。" }
     $counts = & git -C $Root rev-list --left-right --count "HEAD...origin/$branch"
@@ -179,12 +179,12 @@ function Show-RuntimeHealth([string]$Name, [int]$Port, [string]$Profile) {
     Write-Host "[$Name] READY: $base/ui"
 }
 
-function Start-OneRuntime([string]$Name, [string]$Root, [string]$Profile, [int]$Port, [string]$ExpectedBranch) {
+function Start-OneRuntime([string]$Name, [string]$Root, [string]$Profile, [int]$Port, [string]$ExpectedBranch, [switch]$RequireCleanCheckout) {
     try {
         if ($Profile -eq $script:DevProfile) { $null = Assert-ProfileRuntime $Profile $script:DevRoot }
         if ($Profile -eq $script:ProdProfile) { $null = Assert-ProfileRuntime $Profile $script:ProdRoot }
         Assert-DistinctTunnelProfiles
-        $null = Sync-RuntimeBranch -Root $Root -ExpectedBranch $ExpectedBranch
+        $null = Sync-RuntimeBranch -Root $Root -ExpectedBranch $ExpectedBranch -RequireClean:$RequireCleanCheckout
         Start-TunnelProfile $Profile
         Show-RuntimeHealth $Name $Port $Profile
         return $true

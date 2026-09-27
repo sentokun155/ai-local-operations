@@ -4,13 +4,13 @@ Personal Local Operations / Local MCP implementation repository. This repository
 
 ## Canonical source and runtime checkouts
 
-`sentokun155/ai-local-operations` is the canonical source. `C:\Dev\DevEnv` is the Development runtime checkout for candidate verification. `C:\Dev\ProdEnv` is the Production runtime checkout and runs accepted `main` only. A Worker Slot's `ai-local-operations` clone is an implementation workspace; the MCP runtime never starts from a Worker Slot.
+`sentokun155/ai-local-operations` is the canonical source. `C:\Dev\DevEnv` is the Development runtime checkout. `C:\Dev\ProdEnv` is a separate Production runtime checkout. Dev / Prod separation prevents local profile and process collisions; it is not a release-management system. A Worker Slot's clone is an implementation workspace; the MCP runtime never starts from a Worker Slot.
 
-Promotion flow: implement and commit in a Worker checkout, non-force push, fast-forward DevEnv to the candidate branch, verify through Development, then after acceptance/merge fast-forward ProdEnv to `main`. The scripts require clean checkouts and fast-forward updates. Production scripts refuse a non-`main` branch. T001 does not promote its candidate to Production.
+Development verification uses the `Local Operations Dev` profile and the requested repository branch. Production changes are outside T002.
 
 ## Local prototype audit and migration
 
-The pre-repository prototype at `C:\Dev\local-mcp` contained `server.py`, `src/local_mcp/dispatch.py`, `tests/test_dispatch.py`, `tests/test_live_app_server.py`, `pyproject.toml`, `.python-version`, `uv.lock`, and its operational README. The MCP `ping` / `ping2` tools, app-server adapter, model and reasoning validation, `workspace-write` dispatch, DispatchReceipt, retry ledger, uncertainty guard, and committed Task Request blob validation were retained and extended here.
+The pre-repository prototype at `C:\Dev\local-mcp` contained `server.py`, `src/local_mcp/dispatch.py`, `tests/test_dispatch.py`, `tests/test_live_app_server.py`, `pyproject.toml`, `.python-version`, `uv.lock`, and its operational README. The MCP `ping` / `ping2` tools, app-server adapter, model and reasoning validation, `workspace-write` dispatch, DispatchReceipt, retry ledger, and uncertainty guard were retained and extended here. Dispatch reads the current Task Request at its repository-relative path without pinning its Git blob or starting revision.
 
 The prototype's `.venv`, Python cache, and machine-local runtime data are not source. No API key, tunnel credential, Codex credential, `.env`, dispatch SQLite database, Worker clone, log, cache, or temporary Evidence is committed. The old `C:\Dev\local-mcp` tree is migration input only.
 
@@ -70,13 +70,13 @@ Setup validates runtime checkouts and local tools; it does not start either Tunn
 
 Replacing an existing profile requires the separate `-ReplaceExistingProfiles` switch. Setup writes only Tunnel profile configuration and the environment-variable reference; it never writes the API key value. Verify profiles with `tunnel-client doctor --profile local-operations-dev --explain` and `tunnel-client doctor --profile local-operations --explain`.
 
-The current Production checkout is intentionally left on accepted `main` while this candidate remains unmerged. If `main` does not yet contain `server.py` and the Python project, Production startup will HOLD until an accepted runtime is available.
+T002 updates Development verification only. It does not start or update the Production runtime.
 
-`start-all.ps1` starts each environment independently, skips an already-running profile, and checks `/readyz`. A failure in one does not stop the other. `restart-dev.ps1` operates only on DevEnv and the Development profile. `restart-prod.ps1` operates only on ProdEnv and Production `main`. Restarts stop when a Worker lease is active. The scripts never use `reset --hard`, `clean`, force push, or branch deletion.
+`start-all.ps1` starts each environment independently, skips an already-running profile, and checks `/readyz`. A failure in one does not stop the other. `restart-dev.ps1` operates only on DevEnv and the Development profile; it allows a dirty development checkout and uses an ordinary fast-forward update if possible. A conflict stops the restart and preserves local edits. `restart-prod.ps1` operates only on ProdEnv and Production `main`, and requires its checkout to be clean. Restarts stop when a Worker lease is active. The scripts never use `reset --hard`, `clean`, force push, or branch deletion.
 
-Finish and release tasks before restarting. Legacy explicit-path tasks are not represented in the Worker Pool lease table and must also be checked in Codex. A Tunnel restart can stop its child MCP/app-server process.
+Finalize completed Worker tasks before restarting. Legacy explicit-path tasks are not represented in the Worker Pool lease table and must also be checked in Codex. A Tunnel restart can stop its child MCP/app-server process.
 
-After changing MCP tool schemas: restart the corresponding Tunnel; in ChatGPT Web open its Plugin and choose **Manage → Update tools**; confirm the tool list and use a new chat if it remains stale.
+After changing MCP tool schemas, restart the corresponding Tunnel and refresh the connected Local Operations tool catalog in the client. A task can retain an older cached tool list; confirm the new schema in a fresh task if the current list stays stale.
 
 Windows User environment variable changes are inherited only by newly started processes. After changing `CONTROL_PLANE_API_KEY`, `LOCAL_OPERATIONS_WORKER_ROOT`, or `LOCAL_OPERATIONS_WORKER_POOL_CONFIG`, open a new `pwsh` session as needed, restart the target Tunnel/MCP runtime, then verify the effective state through the MCP tools.
 
@@ -107,9 +107,9 @@ uv --directory C:\Dev\DevEnv run --locked python -m local_mcp.admin status
 
 The local SQLite file `%LOCALAPPDATA%\LocalOperations\dispatch-ledger.sqlite3` stores dispatch deduplication and Worker lease state; Git ignores it. SQLite `BEGIN IMMEDIATE` makes slot selection atomic across server processes. A lease is recorded before repository preparation. The dispatch ledger and Worker state use separate table updates in the same database; failures preserve duplicate safety and quarantine uncertain repository state.
 
-States are `FREE`, `LEASED`, `DIRTY`, and `QUARANTINED`. Only `FREE` slots can be leased. Before dispatch, Local Operations checks every managed clone's identity and clean state, fetches the requested repository, and checks out or fast-forwards only the requested remote branch. Divergence, wrong remote, unknown branch, tracked changes, or untracked files cause HOLD/quarantine without deleting data. The app-server `cwd` is the selected target repository root, never the Worker root or a sibling repository.
+States include `FREE`, `LEASED`, `DIRTY`, and `QUARANTINED`. Only `FREE` slots can be leased. PREPARE checks the selected clone's remote identity and local changes, fetches `origin`, then checks out or fast-forwards the requested branch. It does not inspect sibling clones or restore a default branch on release. A wrong remote, unknown branch, uncommitted local changes, or a branch that cannot be updated with a fast-forward stays visible for recovery; no local work is discarded. The app-server `cwd` is the selected target repository root.
 
-Release requires the exact Worker/Task lease, explicit completion confirmation, and an app-server `thread/read` result proving the acknowledged turn completed or the rejected thread has no active turn. It checks all managed repositories, verifies the requested branch is reflected on its remote, and fast-forwards the target to its configured default branch. A local-only commit, dirty state, remote mismatch, or changed sibling repository quarantines the slot. Uncertain dispatch outcomes remain leased. Release never resets, cleans, deletes branches, or force-pushes.
+`finalize_codex_task` requires `worker_id`, `work_identity`, and `task_key`. It reads the exact dispatched turn and requires `completed`, stages non-ignored changes, blocks common credential files/values, commits with the Task identity, and pushes normally to `origin` on the requested branch. Push failure leaves the local commit and lease intact. With no changes, it returns the Result without making a commit. A clean target clone becomes `FREE` on its current branch; an unclean target remains leased. No force push, reset, rebase, default-branch restore, or remote revision readback is used.
 
 ## MCP tools and dispatch contract
 
@@ -119,7 +119,7 @@ Bounded tools:
 - `ping2` → `LOCAL_MCP_OK2`
 - `dispatch_codex_task`
 - `get_worker_pool_status`
-- `release_codex_worker`
+- `finalize_codex_task`
 
 Before migration, logical dispatch used a registered checkout or needed a local path. The normal fixed-pool route now takes only:
 
@@ -136,11 +136,13 @@ reasoning_effort?
 
 `repository_path` and absolute-path inputs remain local diagnostic overrides. Chat does not need them. There is no generic `run_shell` tool.
 
-Dispatch validates repository identity, branch, tracked and committed Task Request blob, repository commit, model, and reasoning effort. The manifest pins these identities. Codex receives `workspace-write`; dispatch grants no merge, force-push, publication, deployment, or destructive-cleanup authority. Thread names remain `Task Key + Task Name`.
+Dispatch validates the configured repository identity, requested branch, current Task Request file path, model, and reasoning effort. Commit and blob values in the receipt are diagnostic only. Codex receives `workspace-write`; dispatch grants no commit, push, merge, force-push, publication, deployment, or destructive-cleanup authority. Thread names remain `Task Key + Task Name`.
 
-`DISPATCHED` means the app-server acknowledged `turn/start`, not that the task completed. The receipt includes Worker ID, selected repository root for diagnosis, thread/turn IDs, and pinned commit/blob. Repeating `work_identity + task_key` returns the accepted receipt without another turn. Uncertain outcomes block a second task. Explicit turn rejection can retry on its existing thread and keeps the Worker leased. A clean pre-dispatch HOLD releases the lease only after safe baseline restoration.
+`DISPATCHED` means the app-server acknowledged `turn/start`, not that the task completed. The receipt includes Worker ID, selected repository root for diagnosis, thread/turn IDs, and informational commit/blob values. Repeating `work_identity + task_key` returns the accepted receipt without another turn. Uncertain outcomes block a second task. Explicit turn rejection can retry on its existing thread and keeps the Worker leased.
 
-`get_worker_pool_status` reports configured slot state without clone contents or credentials. `release_codex_worker` requires `worker_id`, `work_identity`, `task_key`, and `confirm_completed=true`; the server verifies turn completion and repository/remote cleanliness before making the slot FREE.
+`get_worker_pool_status` reports configured slot state without clone contents or credentials. After Codex completes, `finalize_codex_task` returns the final agent message, changed paths, commit SHA when present, and push status, then frees a clean Worker. It does not send an automatic callback to an existing ChatGPT chat.
+
+Set `LOCAL_OPERATIONS_CODEX_EXECUTABLE` to the Codex executable path when it is not on `PATH`. If unset, Local Operations uses `shutil.which("codex")`.
 
 ## Verification
 
@@ -150,21 +152,23 @@ Run the bounded unit/integration suite:
 uv run --locked python -m unittest discover -s tests -v
 ```
 
-The live Development E2E uses a temporary bare fixture repository, dispatches a read-only synthetic Task Request to the installed Codex app-server, waits for completion, confirms the Worker stayed clean, and calls the safe release tool. It does not use a GWI-0006/GWI-0009 task:
+The Development Plugin probe uses a harmless committed probe branch and Result file, never a GWI-0006/GWI-0009 task. T002's concrete probe and outcome are recorded in `work/gwi-0010/ENTRY.md`.
+
+The opt-in automated app-server integration test creates a disposable local fixture repository, dispatches a harmless Result request, then checks finalization, push, and Worker release. It uses the installed Codex app-server and does not call the Dev Plugin connector:
 
 ```powershell
 $env:LOCAL_MCP_RUN_LIVE_APP_SERVER_TESTS = "1"
 uv run --locked python -m unittest discover -s tests -p test_live_app_server.py -v
 ```
 
-The probe uses a disposable clone below the OS temporary directory and removes it when the test exits.
+The automated fixture clone is below the OS temporary directory. The Development Plugin probe uses a configured Worker and leaves its remote probe branch available for inspection.
 
 ## Troubleshooting
 
 - `WORKER_POOL_NOT_CONFIGURED`: set the two local Worker Pool variables and use the documented JSON format.
 - `WORKER_REPOSITORY_UNAVAILABLE`: run bounded bootstrap and check the configured clone URL/identity.
 - `WORKER_REPOSITORY_DIRTY` / `WORKER_BRANCH_DIVERGED`: inspect and preserve local state; do not reset or clean.
-- `NO_FREE_WORKER`: inspect `get_worker_pool_status`; release completed work or resolve quarantined slots deliberately.
+- `NO_FREE_WORKER`: inspect `get_worker_pool_status`; finalize completed work or resolve quarantined slots deliberately.
 - `DISPATCH_OUTCOME_UNKNOWN`: inspect the saved Codex thread; never retry the same key as a new task.
 - `CODEX_UNAVAILABLE`: Codex CLI/app-server must be available to the runtime account.
 - Tunnel profile mismatch: run `tunnel-client doctor --profile <profile> --explain`; confirm its MCP command uses its DevEnv/ProdEnv path and the Tunnel IDs differ.
