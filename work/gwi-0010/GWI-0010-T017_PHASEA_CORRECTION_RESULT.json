@@ -1,0 +1,67 @@
+{
+  "artifactType": "ManagedTaskResult",
+  "workIdentity": {
+    "workKey": "GWI-0010",
+    "workName": "Chat→Codex MCP Dispatch / Local Worker Pool",
+    "exactWorkReference": "https://github.com/sentokun155/ai-dev-control/issues/16"
+  },
+  "taskIdentity": {
+    "taskKey": "GWI-0010-T017/PhaseA/diagnosis",
+    "taskName": "Worker Python Runtime 診断とHost環境整理",
+    "phase": "PhaseA",
+    "purpose": "diagnosis",
+    "taskStage": "Investigation / Host Maintenance",
+    "logicalRole": "Host Maintenance / Investigation Actor",
+    "executionSurface": "Desktop Codex"
+  },
+  "resultAuthority": "Current user instruction authorizes only this T017 Phase A save-contract correction and factual Issue 16 Current State synchronization.",
+  "workPerformed": "Corrected only the persistence contract for the already completed Phase A read-only diagnosis. Preserved the original Result commit as historical record. No diagnosis was rerun.",
+  "changedArtifacts": [
+    "work/gwi-0010/GWI-0010-T017_PHASEA_CORRECTION_RESULT.json"
+  ],
+  "verification": [
+    {
+      "name": "Original Result and pre-write target basis",
+      "outcome": "verified",
+      "details": "Original Result blob 324b70d02202627d642cd68f8434ba0b7845b0a1 and branch HEAD 3c9806223407a31fb0e6ce1f2e46c7b5d3551564 were read before correction; pinned Task Request/Handoff baseline is 64d77dc0af0e10a738c870d6dfb81a6a2a6b96f0."
+    },
+    {
+      "name": "Applicable managed artifact contract",
+      "outcome": "verified",
+      "details": "Control registry routes reusable delegation preparation to ai-operations-skills; the exact Ops commit 61a1463fb2f4654b637fcfdf67608a9be8940281 supplies the Gate, exact-payload guard, and persistence rules."
+    },
+    {
+      "name": "Phase A diagnosis rerun",
+      "outcome": "not_run",
+      "reason": "User explicitly limited this correction to saving the completed Phase A record and prohibited diagnosis rerun."
+    }
+  ],
+  "workNotPerformed": [
+    "Python/uv runtime diagnosis rerun",
+    "Worker Runtime tests or dispatch",
+    "Phase B",
+    "ACL/security or configuration changes",
+    "installation/update",
+    "cleanup/deletion",
+    "credential value access",
+    "production restart",
+    "changes to WorkerRoot worker-01..05 or ProdEnv"
+  ],
+  "unresolvedScope": [
+    "T017 remains HOLD; Worker Python 3.13+ verification remains incomplete.",
+    "Any remediation and Phase B work require separate human decision and authorization."
+  ],
+  "stopReopenState": "T017 remains HOLD. Original ungated commit 3c9806223407a31fb0e6ce1f2e46c7b5d3551564 is retained unchanged as history; this correction does not mark the original save READY or T017 complete.",
+  "nextCondition": "Stop after exact-payload Gate and guard, ordinary non-force branch persistence, readback, and factual Current State synchronization. Do not proceed to Phase B without a separate decision/authorization.",
+  "reflectionState": "REMOTE_REFLECTION_REQUIRED",
+  "finalRevision": null,
+  "persistenceState": "REMOTE_REFLECTION_REQUIRED",
+  "observedTargetBasis": {
+    "repository": "sentokun155/ai-local-operations",
+    "branch": "gwi-0010-ai-local-operations",
+    "preWriteHead": "3c9806223407a31fb0e6ce1f2e46c7b5d3551564",
+    "originalResultPath": "work/gwi-0010/GWI-0010-T017_RESULT.md",
+    "originalResultBlob": "324b70d02202627d642cd68f8434ba0b7845b0a1",
+    "pinnedRequestAndHandoffCommit": "64d77dc0af0e10a738c870d6dfb81a6a2a6b96f0"
+  }
+}
