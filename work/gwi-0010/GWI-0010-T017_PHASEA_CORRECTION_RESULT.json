@@ -6,7 +6,7 @@
     "exactWorkReference": "https://github.com/sentokun155/ai-dev-control/issues/16"
   },
   "taskIdentity": {
-    "taskKey": "GWI-0010-T017/PhaseA/diagnosis",
+    "taskKey": "GWI-0010-T017",
     "taskName": "Worker Python Runtime 診断とHost環境整理",
     "phase": "PhaseA",
     "purpose": "diagnosis",
