@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "workerCount": 2,
+  "repositories": [
+    {
+      "identity": "sentokun155/ai-dev-control",
+      "cloneUrl": "https://github.com/sentokun155/ai-dev-control.git",
+      "defaultBranch": "main"
+    },
+    {
+      "identity": "sentokun155/ai-operations-skills",
+      "cloneUrl": "https://github.com/sentokun155/ai-operations-skills.git",
+      "defaultBranch": "main"
+    },
+    {
+      "identity": "sentokun155/ai-local-operations",
+      "cloneUrl": "https://github.com/sentokun155/ai-local-operations.git",
+      "defaultBranch": "main"
+    },
+    {
+      "identity": "sentokun155/2Dhakusura",
+      "cloneUrl": "https://github.com/sentokun155/2Dhakusura.git",
+      "defaultBranch": "0_DEV"
+    }
+  ]
+}
